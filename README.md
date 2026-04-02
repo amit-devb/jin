@@ -288,9 +288,10 @@ make develop
 make test-python
 make coverage-python
 make test-rust
-make coverage-rust
 make docs-serve
 make verify
+make verify-full
+make coverage-rust
 ```
 
 Direct commands:

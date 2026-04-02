@@ -1,14 +1,26 @@
 # First Release Guide
 
 This repo is set up so local verification happens before the first release.
-    The package is open source under Apache 2.0 and can be installed with `pip`, `pipx`, `poetry`, or `uv`.
+The package is open source under Apache 2.0 and can be installed with `pip`, `pipx`, `poetry`, or `uv`.
 
 ## Local Verification
 
-Run:
+Run the fast gate:
 
 ```bash
 make verify
+```
+
+That checks:
+
+- Python tests
+- Python coverage
+- Rust tests
+
+Run the full pre-release check when you want the Rust coverage summary too:
+
+```bash
+make verify-full
 ```
 
 That checks:
