@@ -147,7 +147,7 @@ authors = ["ci@example.com"]
 
 [tool.poetry.dependencies]
 python = ">=3.9,<4.0"
-jin = { path = "${ROOT_DIR}", develop = false }
+jin-monitor = { path = "${ROOT_DIR}", develop = false }
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
