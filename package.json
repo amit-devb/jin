@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "scripts": {
+    "build": "npm run build:dashboard",
+    "build:dashboard": "python scripts/build_dashboard_assets.py",
+    "typecheck:dashboard": "tsc --project frontend/tsconfig.json --noEmit",
+    "test:e2e": "npx playwright test",
+    "test:e2e:po-agent": "npx playwright test tests/e2e/zzzz-po-manual-agent.spec.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "esbuild": "^0.27.4",
+    "typescript": "^5.9.3"
+  }
+}

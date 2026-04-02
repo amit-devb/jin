@@ -1,0 +1,11 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Jin mark">
+  <defs>
+    <linearGradient id="jin-ring" x1="56" y1="44" x2="204" y2="212" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6EE7D8"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+  </defs>
+  <circle cx="128" cy="128" r="88" stroke="url(#jin-ring)" stroke-width="18"/>
+  <path d="M150 68V148C150 172.301 130.301 192 106 192C86.1939 192 69.0325 180.697 60.7071 164.336L82.0902 153.643C86.4321 162.188 95.2625 168 105.5 168C117.926 168 128 157.926 128 145.5V68H150Z" fill="#0F172A"/>
+  <path d="M180 90H194V104H180V90ZM180 122H194V136H180V122ZM180 154H194V168H180V154Z" fill="#6EE7D8"/>
+</svg>

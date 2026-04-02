@@ -1,0 +1,18 @@
+[package]
+name = "jin"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[lib]
+name = "jin_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.21" }
+duckdb = { version = "1.10500.0", features = ["bundled", "serde_json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
