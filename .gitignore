@@ -28,4 +28,3 @@ test-results/
 test_output.log
 *.dSYM/
 python/jin_core/*.so
-.env
