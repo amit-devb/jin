@@ -1,0 +1,21 @@
+site_url: https://amit-devb.github.io/jin/
+repo_url: https://github.com/amit-devb/jin
+site_name: Jin
+site_description: FastAPI-native data quality monitoring for API-backed data products
+theme:
+  name: material
+  logo: assets/jin-mark.svg
+  favicon: assets/jin-mark.svg
+nav:
+  - Overview: index.md
+  - Getting Started: getting-started.md
+  - CLI Guide: cli.md
+  - Operator Guide: operator-guide.md
+  - Incident Workflow: incidents.md
+  - Configuration Guide: configuration.md
+  - API v2 Migration: api-v2-migration.md
+  - Maintainer Demo Harness: example-app.md
+  - Data Shape Guide: data-contract.md
+  - Changelog: changelog.md
+  - Release Guide: release.md
+  - First Release Gate: go_no_go_scoreboard.md
