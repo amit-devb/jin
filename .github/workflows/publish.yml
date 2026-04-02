@@ -28,8 +28,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - name: Cache Rust and pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-jin-release-deps-${{ hashFiles('pyproject.toml', 'Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-jin-release-deps-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Install maturin
@@ -51,8 +59,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - name: Cache Rust and pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-jin-release-deps-${{ hashFiles('pyproject.toml', 'Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-jin-release-deps-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Build source distribution
