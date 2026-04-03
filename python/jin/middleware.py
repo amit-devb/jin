@@ -1773,6 +1773,12 @@ class JinMiddleware(BaseHTTPMiddleware):
         if init_db is not None:
             try:
                 init_db(self.db_path)
+                if self._test_conn is not None:
+                    try:
+                        self._test_conn.close()
+                    except Exception:
+                        pass
+                    self._test_conn = None
                 self._initialized = True
             except Exception as e:
                 self.logger.error(f"Failed to initialize Jin database at {self.db_path}: {e}")
@@ -1894,6 +1900,12 @@ class JinMiddleware(BaseHTTPMiddleware):
             level="error",
         )
         self._initialized = False
+        if self._test_conn is not None:
+            try:
+                self._test_conn.close()
+            except Exception:
+                pass
+            self._test_conn = None
         if init_db is not None:
             try:
                 init_db(self.db_path)

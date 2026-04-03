@@ -5233,6 +5233,41 @@ def test_save_config_native_path_upserts_mapping_override_columns(
     assert bool(row[5]) is True
 
 
+def test_save_config_clears_stale_cached_connection_before_fallback_write(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+    encoded_sales_path: str,
+) -> None:
+    monkeypatch.setattr(router_module, "save_endpoint_config", None)
+    middleware = client.app.middleware_stack.app
+    stale_conn = duckdb.connect(middleware.db_path)
+    middleware._test_conn = stale_conn
+    middleware._initialized = False
+
+    response = client.post(
+        f"/jin/api/v2/config/{encoded_sales_path}",
+        json={
+            "dimension_fields": ["retailer", "period"],
+            "kpi_fields": ["data.RSV", "data.units"],
+            "tolerance_pct": 10.0,
+            "confirmed": True,
+            "rows_path": "data[]",
+            "time_field": "period",
+            "time_profile": "token",
+            "time_extraction_rule": "single",
+            "time_pin": False,
+        },
+    )
+    assert response.status_code == 200
+    assert middleware._test_conn is not stale_conn
+
+    detail = client.get(f"/jin/api/v2/endpoint/{encoded_sales_path}")
+    assert detail.status_code == 200
+    config = detail.json()["config"]
+    assert config["rows_path"] == "data[]"
+    assert config["time_field"] == "period"
+
+
 def test_upload_preview_uses_saved_config_after_restart_without_auto_infer_warning(
     client,
     encoded_sales_path: str,
