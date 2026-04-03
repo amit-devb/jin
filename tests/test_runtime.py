@@ -4953,6 +4953,41 @@ def test_endpoint_detail_fallback_supports_legacy_config_rows(
     assert payload["config"]["active_tolerance"] == "normal"
 
 
+def test_endpoint_detail_fallback_bootstraps_schema_before_reading_tables(
+    app, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    middleware = JinMiddleware(app, db_path=str(tmp_path / "detail-bootstrap.duckdb"))
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/sales/amazon/YTD",
+            "headers": [],
+            "query_string": b"",
+            "path_params": {"retailer": "amazon", "period": "YTD"},
+            "app": app,
+        }
+    )
+    middleware._discover_routes(request)
+    monkeypatch.setattr(router_module, "get_endpoint_detail", None)
+
+    stale_conn = duckdb.connect(middleware.db_path)
+    middleware._test_conn = stale_conn
+    middleware._initialized = False
+
+    router = create_router(middleware)
+    detail_endpoint = next(route.endpoint for route in router.routes if "/api/endpoint/" in getattr(route, "path", ""))
+
+    import asyncio
+
+    response = asyncio.run(detail_endpoint("api/sales/{retailer}/{period}"))
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["endpoint_path"] == "/api/sales/{retailer}/{period}"
+    assert middleware._test_conn is not stale_conn
+
+
 def test_endpoint_detail_returns_503_when_connection_fails(
     app, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

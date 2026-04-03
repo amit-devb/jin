@@ -3724,6 +3724,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                     hint="Check stored history/config rows for malformed payloads.",
                 )
                 pass
+        middleware._ensure_python_schema()
+        middleware._reset_cached_connection()
         conn, lock = connection_and_lock()
         use_native_fallback = duckdb is not None and isinstance(conn, duckdb.DuckDBPyConnection)
         native_config_payload = None
