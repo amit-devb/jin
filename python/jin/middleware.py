@@ -1918,6 +1918,15 @@ class JinMiddleware(BaseHTTPMiddleware):
         """Legacy helper for tests. Main code should use _init_db_if_needed."""
         self._init_db_if_needed()
 
+    def _reset_cached_connection(self) -> None:
+        if self._test_conn is None:
+            return
+        try:
+            self._test_conn.close()
+        except Exception:
+            pass
+        self._test_conn = None
+
     def is_auth_enabled(self) -> bool:
         return self.auth_enabled and bool(self.auth_username) and bool(self.auth_password or self.auth_password_hash)
 

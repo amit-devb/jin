@@ -5241,8 +5241,10 @@ def test_save_config_clears_stale_cached_connection_before_fallback_write(
     monkeypatch.setattr(router_module, "save_endpoint_config", None)
     middleware = client.app.middleware_stack.app
     stale_conn = duckdb.connect(middleware.db_path)
+    boot = client.get("/jin")
+    assert boot.status_code in {200, 303}
     middleware._test_conn = stale_conn
-    middleware._initialized = False
+    middleware._initialized = True
 
     response = client.post(
         f"/jin/api/v2/config/{encoded_sales_path}",

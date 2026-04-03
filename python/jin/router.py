@@ -3998,6 +3998,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         require_auth(request, api=True)
         require_duckdb()
         middleware._ensure_python_schema()
+        middleware._reset_cached_connection()
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         record = endpoint_record_or_404(endpoint_path)
         payload = await request.json()
@@ -4240,6 +4241,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         require_auth(request, api=True)
         require_duckdb()
         middleware._ensure_python_schema()
+        middleware._reset_cached_connection()
 
         # Parse measures from either POST body or GET query param
         measure_list: list[str] = []
