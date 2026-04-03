@@ -1,21 +1,19 @@
-name: CI
+name: E2E
 
 on:
-  push:
-    branches:
-      - main
-      - "codex/**"
-  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 2 * * 1"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  verify:
+  e2e:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -40,16 +38,23 @@ jobs:
             ${{ runner.os }}-jin-deps-
       - name: Install frontend dependencies
         run: npm ci
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
       - name: Create venv
         run: uv venv .venv
-      - name: Sync project dependencies
+      - name: Sync app and e2e dependencies
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         run: uv sync --frozen --extra dev --no-install-project
-      - name: Verify
-        env:
-          PYTHONPATH: python
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        run: make verify
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+      - name: Build frontend assets
+        run: npm run build
+      - name: Run dashboard e2e
+        run: npm run test:e2e -- --project=chromium
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            test-results
+            playwright-report

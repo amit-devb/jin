@@ -1,0 +1,54 @@
+name: Install Smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        method: [pip, pipx, uv, poetry]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache uv and Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/uv
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-jin-deps-${{ hashFiles('uv.lock', 'pyproject.toml', 'Cargo.toml', 'package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-jin-deps-
+      - name: Install pip tooling
+        if: matrix.method == 'pip'
+        run: python -m pip install --upgrade pip
+      - name: Install pipx tooling
+        if: matrix.method == 'pipx'
+        run: python -m pip install --upgrade pip pipx
+      - name: Install uv tooling
+        if: matrix.method == 'uv'
+        uses: astral-sh/setup-uv@v4
+      - name: Install poetry tooling
+        if: matrix.method == 'poetry'
+        run: python -m pip install --upgrade pip poetry
+      - name: Run install smoke test
+        env:
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+        run: ./scripts/smoke_install_matrix.sh ${{ matrix.method }}
