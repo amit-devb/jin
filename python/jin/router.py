@@ -599,6 +599,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         use_primary_conn = selected_db_path == middleware.db_path
         close_conn = False
         if use_primary_conn:
+            middleware._ensure_python_schema()
+        if use_primary_conn:
             conn, lock = connection_and_lock()
         else:
             conn = duckdb.connect(selected_db_path)
@@ -1204,6 +1206,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         if duckdb is None:  # pragma: no cover
             return {}
         try:
+            middleware._ensure_python_schema()
             with middleware.db_lock():
                 with duckdb.connect(middleware.db_path) as conn:
                     _ensure_config_mapping_columns(conn)
@@ -1234,6 +1237,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     def _persist_config_mapping_overrides(endpoint_path: str, payload: dict[str, Any]) -> None:
         if duckdb is None:  # pragma: no cover
             return
+        middleware._ensure_python_schema()
         with middleware.db_lock():
             with duckdb.connect(middleware.db_path) as conn:
                 _ensure_config_mapping_columns(conn)
@@ -2100,6 +2104,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         close_conn = False
         try:
             if use_primary_conn:
+                middleware._ensure_python_schema()
                 conn, lock = connection_and_lock()
             else:
                 conn = duckdb.connect(target_db_path)
@@ -3992,6 +3997,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     async def save_config(path: str, request: Request) -> JSONResponse:
         require_auth(request, api=True)
         require_duckdb()
+        middleware._ensure_python_schema()
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         record = endpoint_record_or_404(endpoint_path)
         payload = await request.json()
@@ -4233,6 +4239,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     ) -> JSONResponse:  # pragma: no cover
         require_auth(request, api=True)
         require_duckdb()
+        middleware._ensure_python_schema()
 
         # Parse measures from either POST body or GET query param
         measure_list: list[str] = []
