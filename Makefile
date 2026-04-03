@@ -44,6 +44,7 @@ demo-seed: build-frontend
 demo-run: demo-seed
 	$(PYTHONPATH_VAR) .venv/bin/python scripts/run_demo.py
 
+# CI verification covers both native Rust paths and Python fallback paths.
 verify: build-frontend typecheck-frontend test-python test-rust coverage-python
 
 verify-full: verify coverage-rust

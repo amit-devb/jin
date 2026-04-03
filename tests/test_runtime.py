@@ -5322,6 +5322,71 @@ def test_save_config_clears_stale_cached_connection_before_fallback_write(
     assert config["time_field"] == "period"
 
 
+def test_save_config_fallback_bootstraps_missing_endpoint_table(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+    encoded_sales_path: str,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(router_module, "save_endpoint_config", None)
+    middleware = client.app.middleware_stack.app
+    middleware._reset_cached_connection()
+    middleware._ensure_python_schema = lambda: None  # type: ignore[method-assign]
+
+    db_path = tmp_path / "fallback-schema.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS jin_config (
+            endpoint_path VARCHAR PRIMARY KEY,
+            dimension_overrides VARCHAR,
+            kpi_overrides VARCHAR,
+            tolerance_relaxed DOUBLE DEFAULT 20.0,
+            tolerance_normal DOUBLE DEFAULT 10.0,
+            tolerance_strict DOUBLE DEFAULT 5.0,
+            active_tolerance VARCHAR DEFAULT 'normal',
+            tolerance_pct DOUBLE DEFAULT 10.0,
+            confirmed BOOLEAN DEFAULT false,
+            rows_path VARCHAR,
+            time_end_field VARCHAR,
+            time_profile VARCHAR DEFAULT 'auto',
+            time_extraction_rule VARCHAR DEFAULT 'single',
+            time_format VARCHAR,
+            time_field VARCHAR,
+            time_granularity VARCHAR DEFAULT 'minute',
+            time_pin INTEGER DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT now()
+        )
+        """
+    )
+
+    class DummyLock:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(middleware, "_get_connection", lambda: (conn, DummyLock()))
+
+    response = client.post(
+        f"/jin/api/v2/config/{encoded_sales_path}",
+        json={
+            "dimension_fields": ["retailer", "period"],
+            "kpi_fields": ["data.RSV", "data.units"],
+            "tolerance_pct": 10.0,
+            "confirmed": True,
+            "rows_path": "data[]",
+            "time_field": "period",
+            "time_profile": "token",
+            "time_extraction_rule": "single",
+            "time_pin": False,
+        },
+    )
+    assert response.status_code == 200
+    assert conn.execute("SELECT COUNT(*) FROM jin_endpoints").fetchone()[0] == 0
+
+
 def test_upload_preview_uses_saved_config_after_restart_without_auto_infer_warning(
     client,
     encoded_sales_path: str,
@@ -5403,3 +5468,32 @@ def test_rollups_population_and_query(client) -> None:
         total_samples = sum(int(row.get("samples") or 0) for row in amazon_rows)
         assert total_value >= 120.0
         assert total_samples >= 1
+
+
+def test_rollups_query_fallback_bootstraps_missing_rollups_table(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(router_module, "query_rollups_native", None)
+    middleware = client.app.middleware_stack.app
+    middleware._reset_cached_connection()
+    middleware._ensure_python_schema = lambda: None  # type: ignore[method-assign]
+
+    db_path = tmp_path / "rollups-fallback.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    class DummyLock:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(middleware, "_get_connection", lambda: (conn, DummyLock()))
+
+    response = client.post("/jin/api/v1/query", json={"measures": ["data.RSV"]})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"] == []
+    assert payload["results"] == []

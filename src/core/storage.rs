@@ -690,6 +690,7 @@ pub fn upsert_endpoint_record(
     incoming_source: &str,
     pydantic_schema_json: Option<&str>,
 ) -> Result<(), String> {
+    init_schema(conn).map_err(|err| err.to_string())?;
     validate_endpoint_path(endpoint_path)?;
     let existing_row: Option<(String, Option<String>, String)> = conn
         .prepare(
@@ -2148,6 +2149,7 @@ pub fn save_reference_items(
  default_tolerance_pct: f64,
  upload_source: &str,
 ) -> Result<i64, String> {
+    init_schema(conn).map_err(|err| err.to_string())?;
  validate_endpoint_path(endpoint_path)?;
  let mut imported = 0_i64;
  for item in references {
@@ -2204,6 +2206,7 @@ pub fn save_references(
  payload: &Value,
  upload_source: &str,
 ) -> Result<String, String> {
+    init_schema(conn).map_err(|err| err.to_string())?;
  validate_endpoint_path(endpoint_path)?;
  let references = payload
  .get("references")
@@ -2227,6 +2230,7 @@ pub fn resolve_endpoint_config(
  watch_threshold: Option<f64>,
  extra_overrides: &Value,
 ) -> Result<String, String> {
+    init_schema(conn).map_err(|err| err.to_string())?;
  validate_endpoint_path(endpoint_path)?;
  let row = conn
  .prepare(
@@ -2484,6 +2488,7 @@ pub fn load_saved_endpoint_config(
  conn: &Connection,
  endpoint_path: &str,
 ) -> Result<String, String> {
+    init_schema(conn).map_err(|err| err.to_string())?;
  validate_endpoint_path(endpoint_path)?;
  let row = conn
  .prepare(

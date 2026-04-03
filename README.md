@@ -315,6 +315,9 @@ This sets required checks to:
 - `CI / verify`
 - `CI / e2e`
 
+`CI / verify` exercises both native Rust execution and the Python fallback path, so a
+failure there usually points to a storage/bootstrap mismatch rather than a single test file.
+
 ## Current Expectations
 
 - Python integration and end-to-end tests stay green

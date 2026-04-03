@@ -1203,6 +1203,35 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         for statement in statements:
             conn.execute(statement)
 
+    def _ensure_fallback_storage_tables(conn: Any) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jin_endpoints (
+                endpoint_path VARCHAR,
+                http_method VARCHAR,
+                pydantic_schema VARCHAR,
+                dimension_fields VARCHAR,
+                kpi_fields VARCHAR,
+                config_source VARCHAR DEFAULT 'auto',
+                created_at TIMESTAMP DEFAULT now(),
+                PRIMARY KEY (endpoint_path, http_method)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jin_rollups (
+                endpoint_path VARCHAR NOT NULL,
+                metric_name VARCHAR NOT NULL,
+                grain_key VARCHAR NOT NULL,
+                time_bucket TIMESTAMP NOT NULL,
+                value DOUBLE NOT NULL,
+                samples BIGINT DEFAULT 1 NOT NULL,
+                PRIMARY KEY (endpoint_path, metric_name, grain_key, time_bucket)
+            )
+            """
+        )
+
     def _load_config_mapping_overrides(endpoint_path: str) -> dict[str, Any]:
         if duckdb is None:  # pragma: no cover
             return {}
@@ -4084,6 +4113,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         with lock:
             try:
                 _ensure_config_mapping_columns(conn)
+                _ensure_fallback_storage_tables(conn)
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO jin_config (
@@ -4279,6 +4309,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         conn, lock = connection_and_lock()
         with lock:
             try:
+                _ensure_fallback_storage_tables(conn)
                 where_clauses = []
                 params = []
                 
