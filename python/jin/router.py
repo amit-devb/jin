@@ -4079,6 +4079,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                     hint="Validate config field names and native extension compatibility.",
                 )
                 native_response = None
+        middleware._reset_cached_connection()
         conn, lock = connection_and_lock()
         with lock:
             try:
