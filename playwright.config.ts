@@ -18,7 +18,7 @@ export default defineConfig({
   },
   webServer: {
     command:
-      'rm -f demo-jin.duckdb .jin/active_project.json .jin/projects_catalog.json .jin/bundle_runs.json .jin/license-projects.e2e.json && PYTHONPATH=python .venv/bin/python examples/fastapi_demo/seed_app_db.py && JIN_LICENSE_PROJECTS_PATH=.jin/license-projects.e2e.json PYTHONPATH=python .venv/bin/uvicorn examples.fastapi_demo.app:app --host 127.0.0.1 --port 8010',
+      'rm -f demo-jin.duckdb* .jin/active_project.json .jin/projects_catalog.json .jin/bundle_runs.json .jin/license-projects.e2e.json && PYTHONPATH=python .venv/bin/python examples/fastapi_demo/seed_app_db.py && JIN_DISABLE_NATIVE_CONFIG_LOAD=1 JIN_LICENSE_PROJECTS_PATH=.jin/license-projects.e2e.json PYTHONPATH=python .venv/bin/uvicorn examples.fastapi_demo.app:app --host 127.0.0.1 --port 8010',
     url: 'http://127.0.0.1:8010/jin',
     reuseExistingServer: false,
     timeout: 120_000,

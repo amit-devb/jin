@@ -458,3 +458,48 @@ async def test_run_upload_analysis_native_array_and_fallback_processed_item_path
     assert payload["successful_runs"] == 2
     assert payload["failed_runs"] == 0
     assert len(payload["runs"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_process_observation_native_failure_uses_python_runtime_fallback(
+    app,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    middleware = JinMiddleware(app, db_path=str(tmp_path / "phase5-process-fallback.duckdb"))
+    endpoint_path = "/api/revenue/{retailer}"
+    record = EndpointRecord(
+        method="GET",
+        path=endpoint_path,
+        response_model=None,
+        endpoint_callable=lambda: {},
+        fields=[],
+        dimension_fields=["retailer", "data[].date", "data[].label"],
+        kpi_fields=["data[].revenue", "data[].orders"],
+        metrics=[],
+        watch_config={},
+    )
+
+    monkeypatch.setattr(
+        middleware,
+        "_run_native_process_observations_async",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("native observation boom")),
+    )
+
+    await middleware._process_observation_payload_async(
+        record,
+        endpoint_path,
+        "GET",
+        json.dumps({"path": {"retailer": "walmart"}, "query": {"dates": ["2026-03-19"]}, "body": {}, "headers": {}}),
+        [
+            {"date": "2026-03-19", "label": "current", "revenue": 4711.9, "orders": 100},
+            {"date": "2026-03-18", "label": "baseline", "revenue": 4500.0, "orders": 98},
+        ],
+        "{}",
+    )
+
+    state = middleware._runtime_endpoint_state(endpoint_path)
+    assert len(state["history"]) == 2
+    assert state["history"][0]["dimension_json"]["retailer"] == "walmart"
+    assert {entry["kpi_json"]["data[].revenue"] for entry in state["history"]} == {4711.9, 4500.0}
+    assert len(state["recent_history"]) == 2

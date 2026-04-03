@@ -1804,10 +1804,9 @@ async function saveConfig() {
       const sampleCount = Number(previewPayload?.sample_count || 0);
       const successCount = Number(previewPayload?.summary?.success_count || 0);
       if (sampleCount > 0 && successCount === 0 && sampleSource !== 'schema_example_rows') {
-        const message = 'Time mapping could not parse sample rows. Update Time field/settings before saving.';
+        const message = 'Time mapping could not parse sample rows yet. Setup can still be saved; mapping will validate after the first real check.';
         ui.configFeedback.textContent = message;
-        showToast(message, 'error');
-        return;
+        showToast(message, 'warning');
       }
       if (sampleCount === 0) {
         ui.configFeedback.textContent = 'No sample rows yet. Setup can still be saved; mapping will validate after first check.';
@@ -3246,15 +3245,15 @@ ui.nav.addEventListener('click', async (event: Event) => {
   const button = closestButton(event.target, 'button[data-view]');
   if (!button) return;
   state.currentView = button.dataset.view;
-  if (state.currentView === 'playbook') {
-    try {
-      await ensurePoPlaybookLoaded(true);
-    } catch (error) {
-      notifyAsyncError(error, 'Failed to load PO playbook.');
-    }
-  }
   syncBrowserRoute('push');
   renderShell();
+  if (state.currentView === 'playbook') {
+    void ensurePoPlaybookLoaded(true).then(() => {
+      if (state.currentView === 'playbook') renderShell();
+    }).catch((error) => {
+      notifyAsyncError(error, 'Failed to load PO playbook.');
+    });
+  }
   if (state.currentView === 'api' && state.selectedApi) {
     const detail = await loadDetail(state.selectedApi);
     if (!detail) return;
@@ -3267,15 +3266,15 @@ document.addEventListener('click', async (event: Event) => {
   const button = closestButton(event.target, 'button[data-view]');
   if (!button || button.closest('#nav')) return;
   state.currentView = button.dataset.view as any;
-  if (state.currentView === 'playbook') {
-    try {
-      await ensurePoPlaybookLoaded(true);
-    } catch (error) {
-      notifyAsyncError(error, 'Failed to load PO playbook.');
-    }
-  }
   syncBrowserRoute('push');
   renderShell();
+  if (state.currentView === 'playbook') {
+    void ensurePoPlaybookLoaded(true).then(() => {
+      if (state.currentView === 'playbook') renderShell();
+    }).catch((error) => {
+      notifyAsyncError(error, 'Failed to load PO playbook.');
+    });
+  }
   if (state.currentView === 'api' && state.selectedApi) {
     const detail = await loadDetail(state.selectedApi);
     if (!detail) return;
@@ -3893,15 +3892,16 @@ window.showIncident = function showIncident(id: number) {
 
 window.setView = function setView(v: any) {
   state.currentView = normalizeView(v);
+  syncBrowserRoute('push');
+  renderShell();
   if (state.currentView === 'playbook') {
-    void ensurePoPlaybookLoaded(true).then(() => renderShell()).catch((error) => {
+    void ensurePoPlaybookLoaded(true).then(() => {
+      if (state.currentView === 'playbook') renderShell();
+    }).catch((error) => {
       notifyAsyncError(error, 'Failed to load PO playbook.');
       renderShell();
     });
-    return;
   }
-  syncBrowserRoute('push');
-  renderShell();
 };
 
 document.addEventListener('click', (e) => {

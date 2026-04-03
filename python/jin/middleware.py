@@ -2176,25 +2176,50 @@ class JinMiddleware(BaseHTTPMiddleware):
                 else:
                     prefixed_items.append(item)
 
-            results = await self._run_native_process_observations_async(
-                endpoint_path,
-                method,
-                request_json,
-                json.dumps(prefixed_items),
-                config_json,
-            )
-            for item, result in zip(array_items, results):
-                self._mirror_python_state(record, result, item)
-                for anomaly in result.get("anomalies", []):
-                    self.logger.warning(
-                        "anomaly detected: %s %s %s%%",
-                        result["grain_key"],
-                        anomaly["kpi_field"],
-                        anomaly["pct_change"],
-                    )
+            try:
+                results = await self._run_native_process_observations_async(
+                    endpoint_path,
+                    method,
+                    request_json,
+                    json.dumps(prefixed_items),
+                    config_json,
+                )
+                for item, result in zip(array_items, results):
+                    self._mirror_python_state(record, result, item)
+                    for anomaly in result.get("anomalies", []):
+                        self.logger.warning(
+                            "anomaly detected: %s %s %s%%",
+                            result["grain_key"],
+                            anomaly["kpi_field"],
+                            anomaly["pct_change"],
+                        )
+            except Exception as exc:
+                self._record_error(
+                    "middleware.process_response",
+                    "Native observation processing failed; using Python fallback for this response.",
+                    hint="Check stored endpoint config rows and DuckDB native extension compatibility.",
+                    endpoint_path=endpoint_path,
+                    detail=str(exc),
+                    level="warning",
+                )
+                for item in array_items:
+                    fallback_result = self._build_python_observation_result(record, request_json, item)
+                    self._mirror_python_state(record, fallback_result, item)
             self.license_client.increment_usage(len(array_items))
         else:
-            await self._record_processed_item_async(record, endpoint_path, method, request_json, data, config_json)
+            try:
+                await self._record_processed_item_async(record, endpoint_path, method, request_json, data, config_json)
+            except Exception as exc:
+                self._record_error(
+                    "middleware.process_response",
+                    "Native observation processing failed; using Python fallback for this response.",
+                    hint="Check stored endpoint config rows and DuckDB native extension compatibility.",
+                    endpoint_path=endpoint_path,
+                    detail=str(exc),
+                    level="warning",
+                )
+                fallback_result = self._build_python_observation_result(record, request_json, data)
+                self._mirror_python_state(record, fallback_result, data)
             self.license_client.increment_usage(1)
 
     async def dispatch(self, request: Request, call_next) -> Response:
@@ -2965,6 +2990,46 @@ class JinMiddleware(BaseHTTPMiddleware):
             },
             selected_payload,
         )
+
+    def _build_python_observation_result(
+        self,
+        record: EndpointRecord,
+        request_json: str,
+        item: Any,
+    ) -> dict[str, Any]:
+        request_payload: dict[str, Any] = {}
+        try:
+            decoded = json.loads(request_json) if request_json else {}
+            if isinstance(decoded, dict):
+                request_payload = decoded
+        except Exception:
+            request_payload = {}
+
+        flattened = self._flatten_item(item)
+        dimensions: dict[str, Any] = {}
+        path_dims = request_payload.get("path", {})
+        if isinstance(path_dims, dict):
+            for key, value in path_dims.items():
+                if value not in (None, ""):
+                    dimensions[str(key)] = value
+        for field in record.dimension_fields:
+            value = self._lookup_analysis_actual_value(flattened, str(field))
+            if value is not None:
+                dimensions[str(field)] = value
+
+        kpi_json: dict[str, Any] = {}
+        for field in record.kpi_fields:
+            value = self._lookup_analysis_actual_value(flattened, str(field))
+            if value is not None:
+                kpi_json[str(field)] = value
+
+        return {
+            "grain_key": self._grain_key_from_dimensions(record.path, dimensions),
+            "dimension_json": dimensions,
+            "kpi_json": kpi_json,
+            "comparisons": [],
+            "anomalies": [],
+        }
 
     def _prepare_reference_invocation(self, record: EndpointRecord, row: dict[str, Any]) -> dict[str, Any]:
         defaults = (record.watch_config or {}).get("default_params", {}) or {}

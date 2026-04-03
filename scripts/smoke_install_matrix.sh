@@ -88,7 +88,7 @@ run_pip_smoke() {
   local venv_dir="${TMP_ROOT}/pip-venv"
   "${PYTHON_BIN}" -m venv "${venv_dir}"
   "${venv_dir}/bin/python" -m pip install --upgrade pip >/dev/null
-  "${venv_dir}/bin/python" -m pip install "${ROOT_DIR}" >/dev/null
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 "${venv_dir}/bin/python" -m pip install "${ROOT_DIR}" >/dev/null
   run_cli_checks "${venv_dir}/bin/jin" "${TMP_ROOT}/pip-runtime"
 }
 
@@ -104,7 +104,7 @@ run_uv_smoke() {
   log "Running uv install smoke test"
   local venv_dir="${TMP_ROOT}/uv-venv"
   uv venv "${venv_dir}" --python "${PYTHON_BIN}" >/dev/null
-  uv pip install --python "${venv_dir}/bin/python" "${ROOT_DIR}" >/dev/null
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv pip install --python "${venv_dir}/bin/python" "${ROOT_DIR}" >/dev/null
   run_cli_checks "${venv_dir}/bin/jin" "${TMP_ROOT}/uv-runtime"
 }
 
@@ -121,7 +121,7 @@ run_pipx_smoke() {
   export PIPX_HOME="${TMP_ROOT}/pipx-home"
   export PIPX_BIN_DIR="${TMP_ROOT}/pipx-bin"
   mkdir -p "${PIPX_HOME}" "${PIPX_BIN_DIR}"
-  pipx_exec install --force --python "${PYTHON_BIN}" "${ROOT_DIR}" >/dev/null
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 pipx_exec install --force --python "${PYTHON_BIN}" "${ROOT_DIR}" >/dev/null
   run_cli_checks "${PIPX_BIN_DIR}/jin" "${TMP_ROOT}/pipx-runtime"
   pipx_exec uninstall jin >/dev/null || true
 }
@@ -157,7 +157,7 @@ EOF
     cd "${project_dir}"
     poetry_exec config virtualenvs.in-project true --local >/dev/null
     poetry_exec env use "${PYTHON_BIN}" >/dev/null
-    poetry_exec install --no-interaction --no-root >/dev/null
+    PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 poetry_exec install --no-interaction --no-root >/dev/null
     JIN_PROJECT_NAME="smoke-project" JIN_DB_PATH="${project_dir}/smoke.duckdb" poetry_exec run jin --help >/dev/null
     JIN_PROJECT_NAME="smoke-project" JIN_DB_PATH="${project_dir}/smoke.duckdb" poetry_exec run jin status --format json >/dev/null
   )
