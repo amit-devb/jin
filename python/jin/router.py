@@ -294,6 +294,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
 
     def connection_and_lock():
         try:
+            middleware._ensure_python_schema()
             return middleware._get_connection()
         except Exception as exc:
             middleware._record_error(
