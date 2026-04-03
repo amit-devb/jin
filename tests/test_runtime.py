@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from jin.logger import get_logger
 from jin.middleware import EndpointRecord, JinMiddleware
+import jin.middleware as middleware_module
 import jin.router as router_module
 from jin.router import create_router
 from jin.scheduler import JinScheduler
@@ -27,6 +28,21 @@ class ForwardBodyModel(BaseModel):
 
 class ForwardResponseModel(BaseModel):
     count: int
+
+
+@pytest.fixture(autouse=True)
+def reset_runtime_cached_connections(request: pytest.FixtureRequest):
+    middleware_module._connections.clear()
+    if "client" in request.fixturenames:
+        client = request.getfixturevalue("client")
+        middleware = client.app.middleware_stack.app
+        middleware._reset_cached_connection()
+    yield
+    middleware_module._connections.clear()
+    if "client" in request.fixturenames:
+        client = request.getfixturevalue("client")
+        middleware = client.app.middleware_stack.app
+        middleware._reset_cached_connection()
 
 
 def test_watch_attaches_metadata() -> None:
@@ -5278,6 +5294,7 @@ def test_save_config_clears_stale_cached_connection_before_fallback_write(
     stale_conn = duckdb.connect(middleware.db_path)
     boot = client.get("/jin")
     assert boot.status_code in {200, 303}
+    middleware._reset_cached_connection()
     middleware._test_conn = stale_conn
     middleware._initialized = True
 
