@@ -1165,6 +1165,30 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         }
 
     def _ensure_config_mapping_columns(conn: Any) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jin_config (
+                endpoint_path VARCHAR PRIMARY KEY,
+                dimension_overrides VARCHAR,
+                kpi_overrides VARCHAR,
+                tolerance_relaxed DOUBLE DEFAULT 20.0,
+                tolerance_normal DOUBLE DEFAULT 10.0,
+                tolerance_strict DOUBLE DEFAULT 5.0,
+                active_tolerance VARCHAR DEFAULT 'normal',
+                tolerance_pct DOUBLE DEFAULT 10.0,
+                confirmed BOOLEAN DEFAULT false,
+                rows_path VARCHAR,
+                time_end_field VARCHAR,
+                time_profile VARCHAR DEFAULT 'auto',
+                time_extraction_rule VARCHAR DEFAULT 'single',
+                time_format VARCHAR,
+                time_field VARCHAR,
+                time_granularity VARCHAR DEFAULT 'minute',
+                time_pin INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT now()
+            )
+            """
+        )
         statements = [
             "ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS rows_path VARCHAR",
             "ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_end_field VARCHAR",

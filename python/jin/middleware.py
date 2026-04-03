@@ -2539,6 +2539,30 @@ class JinMiddleware(BaseHTTPMiddleware):
         try:
             conn, lock = self._get_connection()
             with lock:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS jin_config (
+                        endpoint_path VARCHAR PRIMARY KEY,
+                        dimension_overrides VARCHAR,
+                        kpi_overrides VARCHAR,
+                        tolerance_relaxed DOUBLE DEFAULT 20.0,
+                        tolerance_normal DOUBLE DEFAULT 10.0,
+                        tolerance_strict DOUBLE DEFAULT 5.0,
+                        active_tolerance VARCHAR DEFAULT 'normal',
+                        tolerance_pct DOUBLE DEFAULT 10.0,
+                        confirmed BOOLEAN DEFAULT false,
+                        rows_path VARCHAR,
+                        time_end_field VARCHAR,
+                        time_profile VARCHAR DEFAULT 'auto',
+                        time_extraction_rule VARCHAR DEFAULT 'single',
+                        time_format VARCHAR,
+                        time_field VARCHAR,
+                        time_granularity VARCHAR DEFAULT 'minute',
+                        time_pin INTEGER DEFAULT 0,
+                        updated_at TIMESTAMP DEFAULT now()
+                    )
+                    """
+                )
                 conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS rows_path VARCHAR")
                 conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_end_field VARCHAR")
                 conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_profile VARCHAR DEFAULT 'auto'")
