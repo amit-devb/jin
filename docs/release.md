@@ -99,3 +99,28 @@ On PyPI, add a trusted publisher for:
 - environment: `pypi`
 
 After that, the release job can publish without any PyPI secret in GitHub.
+If the project name does not exist yet, the first successful trusted publish
+creates the PyPI project and turns the pending publisher into an active one.
+If the project already exists, the same setup grants release access without an
+API token.
+
+## Security Hardening
+
+To keep tag-driven publishing safe, apply these GitHub protections:
+
+- Protect release tags like `v*` so only maintainers can create or move them.
+- Keep the `pypi` environment protected with required reviewers if you want a
+  manual approval gate before publish.
+- Keep `id-token: write` limited to the publish job only, which this workflow
+  already does.
+- Avoid adding extra steps to the publish job that do not need release access.
+
+That gives you the safer path: short-lived OIDC publish credentials, no stored
+PyPI token, and a narrow release surface that is gated by tag protection and
+environment policy.
+
+## Windows Wheel Note
+
+The Windows release job enables DuckDB's binary download path during wheel
+builds. That avoids a native bundled-link failure on `windows-latest` while
+keeping the Linux, macOS, and PyPI publish flow unchanged.
