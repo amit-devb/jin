@@ -121,6 +121,7 @@ environment policy.
 
 ## Windows Wheel Note
 
-The Windows release job enables DuckDB's binary download path during wheel
-builds. That avoids a native bundled-link failure on `windows-latest` while
-keeping the Linux, macOS, and PyPI publish flow unchanged.
+The Windows release job now relies on the crate-level build script to link the
+Windows Restart Manager import library. That resolves the DuckDB linker errors
+seen on `windows-latest` while keeping the Linux, macOS, and PyPI publish flow
+unchanged.
