@@ -2,14 +2,19 @@ import {
   allIncidentRows,
   currentEndpoints,
   emptyState,
+  businessPriorityBand,
   fmt,
   fmtDate,
   businessPriorityBreakdown,
   businessPriorityScore,
+  incidentDecisionLabel,
+  incidentDecisionTone,
   incidentRows,
   incidentWhyThisMatters,
   inferSeverityClass,
   isFeatureEnabled,
+  isMaintainerMode,
+  apiBrowserVirtualWindow,
   paginate,
   renderApiSections,
   renderPagination,
@@ -21,6 +26,9 @@ import {
   sortIncidents,
   sortRows,
   ui,
+  apiBrowserDensityMetrics,
+  normalizeApiBrowserDensity,
+  modelSetupAdvice,
 } from './core';
 import {
   activityMixChartSvg,
@@ -38,6 +46,19 @@ import type {
   UploadAnalysisRun,
   UploadAnalysisSummary,
 } from './types';
+
+type ApiBrowserColumnKey = 'method' | 'status' | 'setup' | 'issues';
+type ApiBrowserDensity = 'comfortable' | 'compact' | 'dense';
+const API_BROWSER_COLUMN_ORDER: ApiBrowserColumnKey[] = ['method', 'status', 'setup', 'issues'];
+const API_BROWSER_COLUMN_DEFAULT_WIDTHS: Record<ApiBrowserColumnKey, number> = {
+  method: 92,
+  status: 92,
+  setup: 112,
+  issues: 88,
+};
+const API_BROWSER_VIRTUALIZATION_THRESHOLD = 120;
+const API_BROWSER_VIRTUAL_WINDOW_ROWS = 28;
+const API_BROWSER_VIRTUAL_OVERSCAN = 8;
 
 function errorCategory(source: string): string {
   if (source.startsWith('scheduler')) return 'Scheduler';
@@ -64,6 +85,115 @@ function escapeHtml(value: any): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function renderFirstRunChecklist(options: {
+  title: string;
+  description: string;
+  primaryLabel: string;
+  primaryView: string;
+  secondaryLabel: string;
+  secondaryHref: string;
+  footer?: string;
+}): string {
+  return `
+    <div class="row-card onboarding-card">
+      <strong>${escapeHtml(options.title)}</strong>
+      <div class="muted" style="margin-top:6px;">${escapeHtml(options.description)}</div>
+      <ol class="reports-flow-steps" style="margin:12px 0 0 18px;">
+        <li>Install Jin in your own FastAPI app.</li>
+        <li>Hit the endpoint you want to monitor once.</li>
+        <li>Open <code>/jin</code> and finish setup in the APIs workspace.</li>
+      </ol>
+      ${options.footer ? `<div class="tiny muted" style="margin-top:8px;">${escapeHtml(options.footer)}</div>` : ''}
+      <div class="toolbar" style="margin-top:12px; flex-wrap:wrap;">
+        <button class="action" type="button" data-view="${escapeHtml(options.primaryView)}">${escapeHtml(options.primaryLabel)}</button>
+        <button class="action secondary" type="button" onclick="window.open('${options.secondaryHref}', '_blank', 'noopener,noreferrer')">${escapeHtml(options.secondaryLabel)}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPlainLanguageInsight(): string {
+  const endpoints = state.status?.endpoints || [];
+  const anomalies = state.anomalies?.anomalies || [];
+  const summary = state.status?.summary || {
+    healthy: 0,
+    unconfirmed: 0,
+    anomalies: 0,
+  };
+  const needsSetup = endpoints.filter((item) => item.status === 'unconfirmed').length;
+  const needsAttention = endpoints.filter((item) => (item.active_anomalies || 0) > 0 || item.status === 'warning').length;
+  const recentErrors = state.status?.recent_errors || [];
+
+  if (endpoints.length === 0) {
+    return `
+      <div class="row-card">
+        <strong>Block release</strong>
+        <div class="muted" style="margin-top:6px;">You do not have a live project yet. Create one endpoint before treating this project as ready.</div>
+        <div class="tiny muted" style="margin-top:8px;">Start with your own API, not the maintainer demo harness.</div>
+      </div>
+    `;
+  }
+
+  if (anomalies.length > 0) {
+    return `
+      <div class="row-card">
+        <strong>Needs attention</strong>
+        <div class="muted" style="margin-top:6px;">${fmt(anomalies.length)} issue${anomalies.length === 1 ? '' : 's'} need attention. Start with the highest-priority item, then work downward.</div>
+        <div class="tiny muted" style="margin-top:8px;">Jin has already grouped the issues so you can make a business call without reading raw logs first.</div>
+      </div>
+    `;
+  }
+
+  if (needsSetup > 0 || needsAttention > 0) {
+    return `
+      <div class="row-card">
+        <strong>Needs attention</strong>
+        <div class="muted" style="margin-top:6px;">Some APIs still need setup or baseline review. Finish setup first, then use Issues and Reports to track business impact.</div>
+        <div class="tiny muted" style="margin-top:8px;">Healthy: ${fmt(summary.healthy || 0)} • Needs setup: ${fmt(needsSetup)} • Needs care: ${fmt(needsAttention)} • Recent errors: ${fmt(recentErrors.length)}</div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="row-card">
+      <strong>Safe for now</strong>
+      <div class="muted" style="margin-top:6px;">Your project looks healthy right now. Keep watching the highest-risk API and check Reports weekly so you can spot drift before it becomes a release issue.</div>
+      <div class="tiny muted" style="margin-top:8px;">Healthy: ${fmt(summary.healthy || 0)} • Issues: ${fmt(anomalies.length)} • Recent errors: ${fmt(recentErrors.length)}</div>
+    </div>
+  `;
+}
+
+function decisionLanguageForProjectHealth(opts: {
+  endpoints: number;
+  anomalies: number;
+  needsSetup: number;
+  needsAttention: number;
+  topRiskScore?: number;
+}): { label: string; detail: string; tone: 'success' | 'warning' | 'danger' } {
+  const topRiskScore = Number(opts.topRiskScore || 0);
+  if (opts.endpoints === 0) {
+    return {
+      label: 'Block release',
+      tone: 'danger',
+      detail: 'No live endpoint is connected yet.',
+    };
+  }
+  if (opts.anomalies > 0 || opts.needsSetup > 0 || opts.needsAttention > 0) {
+    return {
+      label: 'Needs attention',
+      tone: topRiskScore >= 70 ? 'danger' : 'warning',
+      detail: opts.anomalies > 0
+        ? `${fmt(opts.anomalies)} issue${opts.anomalies === 1 ? '' : 's'} need attention.`
+        : `${fmt(opts.needsSetup || opts.needsAttention)} setup item${(opts.needsSetup || opts.needsAttention) === 1 ? '' : 's'} still need attention.`,
+    };
+  }
+  return {
+    label: 'Safe for now',
+    tone: 'success',
+    detail: 'The project is healthy and ready to keep monitoring.',
+  };
 }
 
 function hasSetupSamples(detail?: EndpointDetail | null): boolean {
@@ -115,6 +245,422 @@ function setupHealthMeta(endpoint: EndpointStatus): { label: string; tone: strin
     tone: 'success',
     hint: 'Setup and baseline are in place.',
   };
+}
+
+function apiBrowserMode(): 'grouped' | 'compact' | 'table' {
+  return state.apiBrowserMode === 'compact' || state.apiBrowserMode === 'table'
+    ? state.apiBrowserMode
+    : 'grouped';
+}
+
+function apiBrowserDensity(): ApiBrowserDensity {
+  return normalizeApiBrowserDensity(state.apiBrowserDensity || 'comfortable');
+}
+
+function apiBrowserSortKey(): string {
+  return state.apiBrowserSort || 'path';
+}
+
+function apiBrowserSortDirection(): 'asc' | 'desc' {
+  return state.apiBrowserSortDirection === 'desc' ? 'desc' : 'asc';
+}
+
+function apiBrowserSortIndicator(key: string): string {
+  if (apiBrowserSortKey() !== key) return '↕';
+  return apiBrowserSortDirection() === 'asc' ? '↑' : '↓';
+}
+
+function apiBrowserVisibleColumns(): ApiBrowserColumnKey[] {
+  const configured = state.apiBrowserColumns || {};
+  return apiBrowserColumnOrder().filter((key) => configured[key] !== false);
+}
+
+function apiBrowserColumnOrder(): ApiBrowserColumnKey[] {
+  const rawOrder = Array.isArray(state.apiBrowserColumnOrder) ? state.apiBrowserColumnOrder : [];
+  const seen = new Set<string>();
+  const order = rawOrder
+    .map((key) => String(key))
+    .filter((key): key is ApiBrowserColumnKey => API_BROWSER_COLUMN_ORDER.includes(key as ApiBrowserColumnKey))
+    .filter((key) => {
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  API_BROWSER_COLUMN_ORDER.forEach((key) => {
+    if (!seen.has(key)) order.push(key);
+  });
+  return order;
+}
+
+function apiBrowserGridTemplate(columns = apiBrowserVisibleColumns()): string {
+  const widths = state.apiBrowserColumnWidths || {};
+  return ['minmax(0, 2.4fr)', ...columns.map((key) => {
+    const fallback = API_BROWSER_COLUMN_DEFAULT_WIDTHS[key];
+    const width = Number(widths[key]);
+    const normalized = Number.isFinite(width) && width > 0 ? Math.round(width) : fallback;
+    return `${normalized}px`;
+  })].join(' ');
+}
+
+function apiBrowserSortValue(item: EndpointStatus, key: string): string | number {
+  const setupMeta = setupHealthMeta(item);
+  const setupScore = setupMeta.label === 'Ready'
+    ? 3
+    : setupMeta.label === 'Needs baseline'
+      ? 2
+      : setupMeta.label === 'Save setup'
+        ? 1
+        : 0;
+  switch (key) {
+    case 'method':
+      return String(item.http_method || '').toLowerCase();
+    case 'status':
+      return String(item.status || 'warning').toLowerCase();
+    case 'group':
+      return routeGroup(item.endpoint_path).toLowerCase();
+    case 'issues':
+      return Number(item.active_anomalies || 0);
+    case 'setup':
+      return setupScore;
+    case 'confirmed':
+      return Number(Boolean(item.confirmed));
+    case 'path':
+    default:
+      return String(item.endpoint_path || '').toLowerCase();
+  }
+}
+
+function apiBrowserSortedEndpoints(endpoints: EndpointStatus[]): EndpointStatus[] {
+  const key = apiBrowserSortKey();
+  const direction = apiBrowserSortDirection() === 'desc' ? -1 : 1;
+  return [...endpoints].sort((a, b) => {
+    const aValue = apiBrowserSortValue(a, key);
+    const bValue = apiBrowserSortValue(b, key);
+    if (typeof aValue === 'number' && typeof bValue === 'number') {
+      if (aValue < bValue) return -1 * direction;
+      if (aValue > bValue) return 1 * direction;
+    } else {
+      const comparison = String(aValue).localeCompare(String(bValue));
+      if (comparison !== 0) return comparison * direction;
+    }
+    return String(a.endpoint_path || '').localeCompare(String(b.endpoint_path || ''));
+  });
+}
+
+function apiBrowserSortButtonHtml(label: string, key: string): string {
+  const active = apiBrowserSortKey() === key;
+  return `
+    <button class="api-table-sort ${active ? 'active' : ''}" type="button" data-api-sort="${escapeHtml(key)}" aria-pressed="${active}">
+      <span>${escapeHtml(label)}</span>
+      <span class="api-table-sort-indicator">${apiBrowserSortIndicator(key)}</span>
+    </button>
+  `;
+}
+
+function apiBrowserHeaderCellHtml(label: string, key: ApiBrowserColumnKey | 'path', resizable = false): string {
+  const pinnedClass =
+    key === 'path'
+      ? 'pinned pinned-path'
+      : key === 'status'
+        ? 'pinned pinned-status'
+        : key === 'issues'
+          ? 'pinned pinned-issues'
+          : '';
+  return `
+    <div class="api-browser-head-cell ${pinnedClass} ${resizable ? 'resizable' : ''}" data-api-browser-column-header="${escapeHtml(key)}">
+      ${apiBrowserSortButtonHtml(label, key)}
+      ${resizable ? `<span class="api-browser-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize ${escapeHtml(label)} column" data-api-browser-column-resize="${escapeHtml(key)}"></span>` : ''}
+    </div>
+  `;
+}
+
+function apiBrowserTableCellHtml(item: EndpointStatus, key: ApiBrowserColumnKey, setupMeta: { label: string; tone: string; hint: string }, issues: number): string {
+  if (key === 'method') {
+    return `<span class="api-browser-cell api-browser-cell-method"><span class="api-browser-pill">${escapeHtml(item.http_method || 'GET')}</span></span>`;
+  }
+  if (key === 'status') {
+    const status = String(item.status || 'warning');
+    return `<span class="api-browser-cell api-browser-cell-status pinned pinned-status"><span class="api-browser-pill status">${escapeHtml(status)}</span></span>`;
+  }
+  if (key === 'setup') {
+    return `<span class="api-browser-cell api-browser-cell-setup"><span class="api-setup-chip ${setupMeta.tone}" title="${escapeHtml(setupMeta.hint)}">${escapeHtml(setupMeta.label)}</span></span>`;
+  }
+  if (key === 'issues') {
+    return `<span class="api-browser-cell api-browser-cell-issues pinned pinned-issues">${issues > 0 ? `<span class="api-browser-pill issues">${issues} issue${issues === 1 ? '' : 's'}</span>` : '<span class="tiny muted">—</span>'}</span>`;
+  }
+  return '';
+}
+
+function apiBrowserTableRowHtml(item: EndpointStatus, visibleColumns: ApiBrowserColumnKey[]): string {
+  const setupMeta = setupHealthMeta(item);
+  const group = routeGroup(item.endpoint_path);
+  const status = String(item.status || 'warning');
+  const issues = Number(item.active_anomalies || 0);
+  return `
+    <button class="api-browser-row ${state.selectedApi === item.endpoint_path ? 'active' : ''}" type="button" data-api="${escapeHtml(item.endpoint_path)}" onclick="openApiFromBrowser(event, '${escapeHtml(item.endpoint_path)}')">
+      <span class="api-browser-cell api-browser-cell-path pinned pinned-path">
+        <span class="status-dot ${status || 'warning'}"></span>
+        <span class="api-browser-path-main">
+          <strong title="${escapeHtml(item.endpoint_path)}">${escapeHtml(item.endpoint_path)}</strong>
+          <span class="tiny muted">${escapeHtml(group)}</span>
+        </span>
+      </span>
+      ${visibleColumns.map((key) => apiBrowserTableCellHtml(item, key, setupMeta, issues)).join('')}
+    </button>
+  `;
+}
+
+function apiBrowserColumnControlHtml(key: ApiBrowserColumnKey, label: string, visible: boolean): string {
+  return `
+    <button class="api-column-btn ${visible ? 'active' : ''}" type="button" data-api-browser-column="${escapeHtml(key)}" aria-pressed="${visible}">
+      <span>${escapeHtml(label)}</span>
+    </button>
+  `;
+}
+
+function apiBrowserColumnControlsHtml(): string {
+  const visibleColumns = apiBrowserVisibleColumns();
+  const orderedColumns = apiBrowserColumnOrder();
+  return `
+    <div class="api-browser-columns">
+      <div class="api-browser-columns-label">
+        <span class="tiny muted">Columns</span>
+        <span class="tiny muted">Path locked</span>
+      </div>
+      <div class="api-browser-columns-buttons">
+        ${apiBrowserColumnControlHtml('method', 'Method', visibleColumns.includes('method'))}
+        ${apiBrowserColumnControlHtml('status', 'Status', visibleColumns.includes('status'))}
+        ${apiBrowserColumnControlHtml('setup', 'Setup', visibleColumns.includes('setup'))}
+        ${apiBrowserColumnControlHtml('issues', 'Issues', visibleColumns.includes('issues'))}
+      </div>
+      <div class="api-browser-order">
+        <div class="tiny muted">Order</div>
+        <div class="api-browser-order-buttons">
+          ${orderedColumns.map((key) => `
+            <div class="api-browser-order-chip ${visibleColumns.includes(key) ? '' : 'hidden'}" draggable="true" data-api-browser-column-drag="${escapeHtml(key)}" data-api-browser-column-drop="${escapeHtml(key)}">
+              <span class="api-browser-order-handle" aria-hidden="true">⋮⋮</span>
+              <span>${escapeHtml(key)}</span>
+              <div class="api-browser-order-actions">
+                <button class="api-column-step" type="button" onclick="moveApiBrowserColumn('${escapeHtml(key)}','left')" data-api-browser-column-move="${escapeHtml(key)}:left" aria-label="Move ${escapeHtml(key)} left">←</button>
+                <button class="api-column-step" type="button" onclick="moveApiBrowserColumn('${escapeHtml(key)}','right')" data-api-browser-column-move="${escapeHtml(key)}:right" aria-label="Move ${escapeHtml(key)} right">→</button>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function apiBrowserTableHtml(endpoints: EndpointStatus[]): string {
+  const sorted = apiBrowserSortedEndpoints(endpoints);
+  const visibleColumns = apiBrowserVisibleColumns();
+  const gridTemplate = apiBrowserGridTemplate(visibleColumns);
+  const density = apiBrowserDensity();
+  const densityMetrics = apiBrowserDensityMetrics(density);
+  const pageSize = sorted.length > 120 ? 80 : 50;
+  const pagination = paginate(sorted, state.apiBrowserPage || 1, pageSize);
+  const virtualization = sorted.length > API_BROWSER_VIRTUALIZATION_THRESHOLD
+    ? apiBrowserVirtualWindow(sorted.length, state.apiBrowserScrollTop || 0, {
+      rowHeight: densityMetrics.rowHeight,
+      windowRows: API_BROWSER_VIRTUAL_WINDOW_ROWS,
+      overscan: API_BROWSER_VIRTUAL_OVERSCAN,
+    })
+    : null;
+  const virtualized = Boolean(virtualization);
+  state.apiBrowserVirtualWindowStart = virtualization?.start || 0;
+  state.apiBrowserVirtualWindowEnd = virtualization?.end || 0;
+  const items = virtualized
+    ? sorted.slice(virtualization!.start, virtualization!.end)
+    : pagination.items;
+  const page = virtualized ? 1 : pagination.page;
+  const totalPages = virtualized ? 1 : pagination.totalPages;
+  const pageLabel = virtualized
+    ? `Virtualized • Showing ${fmt((virtualization?.start || 0) + 1)}-${fmt(Math.min(sorted.length, virtualization?.end || 0))} of ${fmt(sorted.length)}`
+    : totalPages > 1
+      ? `Page ${page} of ${totalPages}`
+      : `${fmt(sorted.length)} APIs`;
+  const topSpacer = virtualized ? Math.max(0, (virtualization?.start || 0) * densityMetrics.rowHeight) : 0;
+  const bottomSpacer = virtualized ? Math.max(0, (sorted.length - (virtualization?.end || 0)) * densityMetrics.rowHeight) : 0;
+  const rowsHtml = items.length
+    ? items.map((item) => apiBrowserTableRowHtml(item, visibleColumns)).join('')
+    : '<div class="empty empty-center api-browser-empty">No APIs match this search.</div>';
+  const headHtml = visibleColumns.map((key) => {
+    if (key === 'method') return apiBrowserHeaderCellHtml('Method', 'method', true);
+    if (key === 'status') return apiBrowserHeaderCellHtml('Status', 'status', true);
+    if (key === 'setup') return apiBrowserHeaderCellHtml('Setup', 'setup', true);
+    return apiBrowserHeaderCellHtml('Issues', 'issues', true);
+  }).join('');
+  return `
+    <div class="api-browser-table-shell" data-api-browser-density="${escapeHtml(density)}" style="--api-browser-grid-template: ${escapeHtml(gridTemplate)}; --api-browser-row-height: ${densityMetrics.rowHeight}px; --api-browser-table-gap: ${densityMetrics.tableGap}px; --api-browser-grid-gap: ${densityMetrics.gridGap}px; --api-browser-head-pad-y: ${densityMetrics.headPadY}px; --api-browser-head-pad-x: ${densityMetrics.headPadX}px; --api-browser-row-pad-y: ${densityMetrics.rowPadY}px; --api-browser-row-pad-x: ${densityMetrics.rowPadX}px;">
+      <div class="api-browser-table-bar">
+        <div class="api-browser-column-bar">
+          ${apiBrowserColumnControlsHtml()}
+          <div class="tiny muted">${escapeHtml(pageLabel)} • Sorted by ${escapeHtml(apiBrowserSortKey())} ${escapeHtml(apiBrowserSortDirection())}</div>
+        </div>
+        <div class="toolbar compact">${virtualized ? '' : renderPagination('api-browser', page, totalPages)}</div>
+      </div>
+      <div class="api-browser-table ${virtualized ? 'virtualized' : ''}" role="table" aria-label="API index table">
+        <div class="api-browser-table-head" role="row">
+          ${apiBrowserHeaderCellHtml('Path', 'path')}
+          ${headHtml}
+        </div>
+        <div class="api-browser-table-body ${virtualized ? 'virtualized' : ''}">
+          ${virtualized ? `<div class="api-browser-spacer" aria-hidden="true" style="height:${topSpacer}px"></div>` : ''}
+          ${rowsHtml}
+          ${virtualized ? `<div class="api-browser-spacer" aria-hidden="true" style="height:${bottomSpacer}px"></div>` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function apiBrowserSummaryHtml(endpoints: EndpointStatus[]): string {
+  const total = endpoints.length;
+  const healthy = endpoints.filter((item) => (item.status || '').toLowerCase() === 'healthy' && (item.active_anomalies || 0) === 0).length;
+  const atRisk = endpoints.filter((item) => {
+    const status = String(item.status || '').toLowerCase();
+    return (item.active_anomalies || 0) > 0 || status === 'warning' || status === 'anomaly' || status === 'unconfirmed';
+  }).length;
+  const needsSetup = endpoints.filter((item) => setupHealthMeta(item).label !== 'Ready').length;
+  const groups = new Set(endpoints.map((item) => routeGroup(item.endpoint_path))).size;
+  return `
+    <div class="api-browser-summary" aria-label="API browser summary">
+      <div class="api-summary-stat">
+        <span class="tiny">Visible APIs</span>
+        <strong>${fmt(total)}</strong>
+      </div>
+      <div class="api-summary-stat healthy">
+        <span class="tiny">Healthy</span>
+        <strong>${fmt(healthy)}</strong>
+      </div>
+      <div class="api-summary-stat warning">
+        <span class="tiny">At risk</span>
+        <strong>${fmt(atRisk)}</strong>
+      </div>
+      <div class="api-summary-stat setup">
+        <span class="tiny">Need setup</span>
+        <strong>${fmt(needsSetup)}</strong>
+      </div>
+      <div class="api-summary-stat muted">
+        <span class="tiny">Groups</span>
+        <strong>${fmt(groups)}</strong>
+      </div>
+    </div>
+  `;
+}
+
+function apiBrowserDensityToggleHtml(density: ApiBrowserDensity): string {
+  return `
+    <div class="api-browser-density" role="group" aria-label="API browser row density">
+      <div class="api-browser-density-buttons">
+        <button class="api-mode-btn ${density === 'comfortable' ? 'active' : ''}" type="button" data-api-browser-density="comfortable" aria-pressed="${density === 'comfortable'}">Comfortable</button>
+        <button class="api-mode-btn ${density === 'compact' ? 'active' : ''}" type="button" data-api-browser-density="compact" aria-pressed="${density === 'compact'}">Compact</button>
+        <button class="api-mode-btn ${density === 'dense' ? 'active' : ''}" type="button" data-api-browser-density="dense" aria-pressed="${density === 'dense'}">Dense</button>
+      </div>
+    </div>
+  `;
+}
+
+function apiBrowserHeroHtml(endpoints: EndpointStatus[], mode: 'grouped' | 'compact' | 'table'): string {
+  const total = endpoints.length;
+  const atRisk = endpoints.filter((item) => {
+    const status = String(item.status || '').toLowerCase();
+    return (item.active_anomalies || 0) > 0 || status === 'warning' || status === 'anomaly' || status === 'unconfirmed';
+  }).length;
+  const needSetup = endpoints.filter((item) => setupHealthMeta(item).label !== 'Ready').length;
+  const groupCounts = endpoints.reduce((acc: Record<string, number>, item) => {
+    const group = routeGroup(item.endpoint_path);
+    acc[group] = (acc[group] || 0) + 1;
+    return acc;
+  }, {});
+  const largestGroup = Object.entries(groupCounts).reduce(
+    (best, [group, count]) => (count > best.count ? { group, count } : best),
+    { group: 'other', count: 0 },
+  );
+  const tip = mode === 'compact'
+    ? 'Compact scan keeps the list dense, sorted, and easy to scan at scale.'
+    : (mode === 'table'
+      ? 'Table index is the highest-density view and is built for larger inventories.'
+      : 'Grouped view is best when you are still configuring a smaller project.');
+  return `
+    <div class="api-browser-hero">
+      <div class="api-browser-hero-copy">
+        <div class="api-browser-hero-meta tiny muted">${fmt(total)} APIs • ${fmt(atRisk)} at risk • ${fmt(needSetup)} need setup • Top group: ${escapeHtml(largestGroup.group)}${largestGroup.count ? ` • ${fmt(largestGroup.count)}` : ''}</div>
+        <div class="api-browser-hero-actions">
+          <button class="action secondary tiny" type="button" onclick="saveBrowserView()">Save browser view</button>
+          <button class="action ghost tiny" type="button" data-view="settings">Open saved views</button>
+        </div>
+        ${apiBrowserDensityToggleHtml(apiBrowserDensity())}
+      </div>
+    </div>
+  `;
+}
+
+function apiBrowserModeToggleHtml(mode: 'grouped' | 'compact' | 'table'): string {
+  return `
+    <div class="api-browser-mode" role="group" aria-label="API browser layout">
+      <button class="api-mode-btn ${mode === 'grouped' ? 'active' : ''}" type="button" data-api-browser-mode="grouped" aria-pressed="${mode === 'grouped'}">Grouped view</button>
+      <button class="api-mode-btn ${mode === 'compact' ? 'active' : ''}" type="button" data-api-browser-mode="compact" aria-pressed="${mode === 'compact'}">Compact scan</button>
+      <button class="api-mode-btn ${mode === 'table' ? 'active' : ''}" type="button" data-api-browser-mode="table" aria-pressed="${mode === 'table'}">Table index</button>
+    </div>
+  `;
+}
+
+function apiBrowserItemHtml(item: EndpointStatus, options: { compact?: boolean; group?: string } = {}): string {
+  const compact = Boolean(options.compact);
+  const setupMeta = setupHealthMeta(item);
+  const issues = Number(item.active_anomalies || 0);
+  const status = String(item.status || 'warning');
+  const groupHtml = options.group ? `<span class="api-group-tag">${escapeHtml(options.group)}</span>` : '';
+  const compactMeta = compact
+    ? `<div class="api-subline api-subline-compact">${groupHtml}<span class="api-setup-chip ${setupMeta.tone}" title="${escapeHtml(setupMeta.hint)}">${escapeHtml(setupMeta.label)}</span></div>`
+    : `<div class="api-subline"><span class="api-setup-chip ${setupMeta.tone}" title="${escapeHtml(setupMeta.hint)}">${escapeHtml(setupMeta.label)}</span></div>`;
+  return `
+    <button class="api-item ${compact ? 'compact' : ''} ${state.selectedApi === item.endpoint_path ? 'active' : ''}" type="button" data-api="${escapeHtml(item.endpoint_path)}" onclick="openApiFromBrowser(event, '${escapeHtml(item.endpoint_path)}')">
+      <div class="api-row ${compact ? 'compact' : ''}">
+        <span class="status-dot ${status || 'warning'}"></span>
+        <div class="api-row-main">
+          <div class="api-row-top">
+            <div class="api-method-status">
+              <strong>${escapeHtml(item.http_method || 'GET')}</strong>
+              <span class="tiny api-status-label">${escapeHtml(status)}</span>
+            </div>
+            ${issues > 0 ? `<span class="tiny api-row-issues">${issues} issue${issues === 1 ? '' : 's'}</span>` : ''}
+          </div>
+          <div class="api-path">${escapeHtml(item.endpoint_path)}</div>
+          ${compactMeta}
+        </div>
+      </div>
+    </button>
+  `;
+}
+
+function apiBrowserGroupHtml(group: string, items: EndpointStatus[], options: { compact?: boolean; collapsed?: boolean } = {}): string {
+  const compact = Boolean(options.compact);
+  const collapsed = Boolean(options.collapsed);
+  const issues = items.filter((item) => (item.active_anomalies || 0) > 0 || String(item.status || '').toLowerCase() === 'anomaly').length;
+  const setupNeeded = items.filter((item) => setupHealthMeta(item).label !== 'Ready').length;
+  const summaryBits = [
+    `${fmt(items.length)} API${items.length === 1 ? '' : 's'}`,
+    issues ? `${fmt(issues)} at risk` : null,
+    setupNeeded ? `${fmt(setupNeeded)} need setup` : null,
+  ].filter(Boolean);
+  return `
+    <div class="api-group ${compact ? 'compact' : ''}">
+      <div class="api-group-title">
+        <div class="api-group-name">
+          <span>${escapeHtml(group)}</span>
+          <span class="api-group-count">${fmt(items.length)}</span>
+        </div>
+        <div class="api-group-actions">
+          <span class="api-group-summary">${escapeHtml(summaryBits.join(' • '))}</span>
+          ${compact ? '' : `<button class="group-toggle" type="button" data-group-toggle="${escapeHtml(group)}">${collapsed ? 'Expand' : 'Collapse'}</button>`}
+        </div>
+      </div>
+      ${collapsed ? '' : items.map((item) => apiBrowserItemHtml(item, { compact, group })).join('')}
+    </div>
+  `;
 }
 
 function formatDimensionSummary(dimensions?: Record<string, any>, grainKey?: string | null): string {
@@ -256,7 +802,7 @@ function monitoringRunStatusMeta(status: string, anomaliesDetected = 0): { pillC
   if ((normalized === 'success' || normalized === 'degraded') && anomalies > 0) {
     return {
       pillClass: 'danger',
-      label: 'Needs review',
+      label: 'Needs attention',
       tooltip: 'Run completed but active mismatches are still open.',
     };
   }
@@ -318,6 +864,12 @@ function plainRunMessage(run: UploadAnalysisRun): string {
   }
   const tolerance = run.tolerance_pct == null ? '' : ` (allowed +/-${Number(run.tolerance_pct).toFixed(1)}%)`;
   return `Some values are outside the allowed range${tolerance}.`;
+}
+
+function uploadDecisionLabel(analysis: UploadAnalysisSummary): 'Safe for now' | 'Needs attention' | 'Block release' {
+  if (Number(analysis.failed_runs || 0) > 0) return 'Block release';
+  if (Number(analysis.mismatch_runs || 0) > 0) return 'Needs attention';
+  return 'Safe for now';
 }
 
 function plainComparisonReason(comparison: UploadAnalysisComparison): string {
@@ -434,11 +986,11 @@ function renderUploadAnalysis(analysis: UploadAnalysisSummary, detail: EndpointD
         </div>
         <div class="upload-analysis-message">${escapeHtml(plainRunMessage(run))}</div>
         <div class="upload-analysis-kpi-stats tiny">
-          ${fmt(comparisons.length)} KPI(s) • ${fmt(flaggedComparisons.length)} need review • ${fmt(matchedComparisons.length)} within range
+          ${fmt(comparisons.length)} KPI(s) • ${fmt(flaggedComparisons.length)} need attention • ${fmt(matchedComparisons.length)} within range
         </div>
         ${highlights ? `<div class="upload-analysis-highlights"><strong>Top findings:</strong> ${escapeHtml(highlights)}${hiddenFlaggedCount ? ` +${hiddenFlaggedCount} more` : ''}</div>` : ''}
         <details class="upload-analysis-detail">
-          <summary>${comparisons.length ? (flaggedComparisons.length ? `KPI details (${flaggedComparisons.length} need review)` : `KPI details (${comparisons.length} matched)`) : 'KPI details'}</summary>
+          <summary>${comparisons.length ? (flaggedComparisons.length ? `KPI details (${flaggedComparisons.length} need attention)` : `KPI details (${comparisons.length} matched)`) : 'KPI details'}</summary>
           ${
             comparisons.length
               ? `
@@ -486,7 +1038,7 @@ function renderUploadAnalysis(analysis: UploadAnalysisSummary, detail: EndpointD
             flaggedComparisons.length
               ? `
                 <div class="upload-analysis-reasons">
-                  <strong>Why this row needs review</strong>
+                  <strong>Why this row needs attention</strong>
                   <ul>
                     ${flaggedComparisons
                       .map((comparison) => `<li>${escapeHtml(plainComparisonReason(comparison))}</li>`)
@@ -558,21 +1110,21 @@ function renderUploadAnalysis(analysis: UploadAnalysisSummary, detail: EndpointD
   const recommendation = (() => {
     if (analysis.verdict === 'mismatch') {
       if (riskScore === 'High') {
-        return 'Open Issues now and triage high-priority mismatches before accepting this baseline.';
+        return 'Block release: review Issues now and review high-priority mismatches before accepting this baseline.';
       }
-      return 'Review mismatch rows and mark expected changes in review, then resolve the rest.';
+      return 'Needs attention: review mismatch rows and mark expected changes in review, then resolve the rest.';
     }
     if (analysis.verdict === 'error') {
-      return 'Fix run errors first, then re-run upload analysis.';
+      return 'Block release: fix run errors first, then re-run upload analysis.';
     }
-    return 'Baseline looks healthy. Continue with scheduled monitoring checks.';
+    return 'Safe for now: baseline looks healthy. Continue with scheduled monitoring checks.';
   })();
   const impactSummary = topImpactList.length
     ? topImpactList.join(' • ')
     : (severeComparisons.length > 0 ? `${severeComparisons.length} KPI check(s) need deeper review.` : 'No major KPI shifts detected.');
 
   const runCards = `
-      ${flaggedRuns.length ? `<div class="upload-analysis-section-title">Upload mismatches (${flaggedRuns.length})</div>` : '<div class="upload-analysis-section-title">All uploaded rows matched</div>'}
+      ${flaggedRuns.length ? `<div class="upload-analysis-section-title">Needs attention (${flaggedRuns.length})</div>` : '<div class="upload-analysis-section-title">Safe for now</div>'}
       ${visibleFlaggedRuns.map((run) => runCard(run)).join('')}
     ${
       hiddenFlaggedRuns.length
@@ -636,7 +1188,7 @@ function renderUploadAnalysis(analysis: UploadAnalysisSummary, detail: EndpointD
   const openIssuesAction = flaggedRuns.length
     ? `
       <div class="toolbar" style="margin-top:12px; justify-content:flex-start;">
-        <button class="action" type="button" onclick="openUploadIssues()">Open Issues</button>
+        <button class="action" type="button" onclick="openUploadIssues()">Review Issues</button>
       </div>
     `
     : '';
@@ -664,14 +1216,14 @@ function renderUploadAnalysis(analysis: UploadAnalysisSummary, detail: EndpointD
         </div>
       </div>
       <div class="upload-analysis-explainer">
-        <strong>What this means</strong>
+        <strong>${uploadDecisionLabel(analysis)}</strong>
         <p>
           A mismatch means the API returned a value outside the allowed tolerance from your uploaded CSV baseline.
           A match means the value stayed within that allowed range.
         </p>
         <p>
           These results are from this upload run. If mismatches exist, they are synced into <strong>Issues</strong> so you can
-          triage and resolve them in one place.
+          review and resolve them in one place.
         </p>
       </div>
       <div class="upload-analysis-summary-grid">
@@ -680,15 +1232,15 @@ function renderUploadAnalysis(analysis: UploadAnalysisSummary, detail: EndpointD
           <span>${fmt(analysis.requested_grains)}</span>
         </div>
         <div class="meta-card meta-card-compact">
-          <strong>Matched</strong>
+          <strong>Safe for now</strong>
           <span>${fmt(analysis.matched_runs)}</span>
         </div>
         <div class="meta-card meta-card-compact">
-          <strong>Mismatched</strong>
+          <strong>Needs attention</strong>
           <span>${fmt(analysis.mismatch_runs)}</span>
         </div>
         <div class="meta-card meta-card-compact">
-          <strong>Run errors</strong>
+          <strong>Block release</strong>
           <span>${fmt(analysis.failed_runs)}</span>
         </div>
         <div class="meta-card meta-card-compact">
@@ -731,6 +1283,7 @@ function filteredErrors(): RecentError[] {
 
 function renderSidebar() {
   const project = state.status?.project;
+  const maintainerMode = isMaintainerMode();
   const trustScore = project?.trust_score ?? 100;
   const tier = String(project?.tier || 'free').toLowerCase();
   const licenseEnforced = project?.license_enforced !== false;
@@ -738,8 +1291,7 @@ function renderSidebar() {
     ? 'unlimited'
     : (project?.project_limit == null ? (tier === 'free' ? '1' : 'unlimited') : String(project.project_limit));
   
-  // Health & License Header
-  const headerHtml = `
+  const headerHtml = maintainerMode ? `
     <div class="sidebar-trust-header">
       <div class="trust-meter">
         <div class="trust-score-ring" style="--score: ${trustScore}%">
@@ -773,6 +1325,13 @@ function renderSidebar() {
         </div>
       </div>
     ` : ''}
+  ` : '';
+  const projectSummaryHtml = maintainerMode ? '' : `
+    <div class="sidebar-card">
+      <strong>Project</strong>
+      <span>${project?.name || 'Customer project'}</span>
+      <div class="tiny" style="margin-top:6px;">Use APIs, Issues, and Reports to operate your project.</div>
+    </div>
   `;
 
   // Apply feature gating to nav buttons
@@ -791,8 +1350,29 @@ function renderSidebar() {
 
   const allEndpoints = state.status?.endpoints || [];
   const endpoints = currentEndpoints();
+  const browserMode = apiBrowserMode();
+  const browserHeroHtml = apiBrowserHeroHtml(endpoints, browserMode);
+  const browserModeHtml = apiBrowserModeToggleHtml(browserMode);
+  const browserSummaryHtml = apiBrowserSummaryHtml(endpoints);
   if (!endpoints.length) {
     const hasFilters = Boolean((state.apiFilter || '').trim() || (state.apiStatusFilter || '').trim());
+    const onboardingEmptyState = allEndpoints.length === 0 && !hasFilters
+      ? `
+        <div class="empty empty-center onboarding-empty">
+          <strong>No APIs connected yet.</strong>
+          <div class="tiny" style="margin-top:6px;">Open Overview for the first-run checklist, then come back here to confirm dimensions, KPIs, and time for your first endpoint.</div>
+          <ol class="reports-flow-steps" style="margin:12px 0 0 18px; text-align:left;">
+            <li>Install Jin in your own FastAPI app.</li>
+            <li>Hit the endpoint you want to monitor once.</li>
+            <li>Return here to finish setup in the APIs workspace.</li>
+          </ol>
+          <div class="toolbar" style="margin-top:12px; justify-content:center; flex-wrap:wrap;">
+            <button class="action" type="button" data-view="overview">Open Overview</button>
+            <button class="action secondary" type="button" onclick="window.open('https://amit-devb.github.io/jin/', '_blank', 'noopener,noreferrer')">Open Getting Started</button>
+          </div>
+        </div>
+      `
+      : '';
     const message = hasFilters
       ? 'No APIs match this search.'
       : allEndpoints.length === 0
@@ -802,62 +1382,55 @@ function renderSidebar() {
             ? 'Jin returned an error while loading APIs. Check server logs and retry.'
             : state.apiDataState === 'unavailable'
               ? 'Cannot load APIs right now. Check backend connection and retry.'
-              : 'No APIs discovered yet. Call one API endpoint to start monitoring.')
+              : 'No APIs connected yet. Open Overview for the first-run checklist.')
         : 'No APIs match this search.';
-    ui.apiList.innerHTML = headerHtml + emptyState(message);
+    ui.apiList.innerHTML = headerHtml + projectSummaryHtml + browserHeroHtml + browserSummaryHtml + browserModeHtml + (onboardingEmptyState || emptyState(message));
   } else {
-    // ... existing grouped logic
-    const grouped = endpoints.reduce((acc: Record<string, EndpointStatus[]>, item: EndpointStatus) => {
-      const key = routeGroup(item.endpoint_path);
-      acc[key] = acc[key] || [];
-      acc[key].push(item);
-      return acc;
-    }, {});
-    ui.apiList.innerHTML = headerHtml + Object.entries(grouped)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([group, items]) => `
-            <div class="api-group">
-              <div class="api-group-title">
-                <span>${group}</span>
-                <button class="group-toggle" type="button" data-group-toggle="${group}">
-                  ${state.collapsedGroups[group] ? 'Expand' : 'Collapse'}
-                </button>
-              </div>
-              ${state.collapsedGroups[group] ? '' : items.map((item) => `
-                <button class="api-item ${state.selectedApi === item.endpoint_path ? 'active' : ''}" type="button" data-api="${item.endpoint_path}">
-                  <div class="api-row">
-                    <span class="status-dot ${item.status || 'warning'}"></span>
-                    <div class="api-row-main">
-                      <div class="api-row-top">
-                        <div class="api-method-status">
-                          <strong>${item.http_method}</strong>
-                          <span class="tiny api-status-label">${item.status || 'warning'}</span>
-                        </div>
-                        ${(item.active_anomalies || 0) > 0 ? `<span class="tiny api-row-issues">${item.active_anomalies || 0} issues</span>` : ''}
-                      </div>
-                      <div class="api-path">${item.endpoint_path}</div>
-                      ${(() => {
-                        const setupMeta = setupHealthMeta(item);
-                        return `<div class="api-subline"><span class="api-setup-chip ${setupMeta.tone}" title="${escapeHtml(setupMeta.hint)}">${escapeHtml(setupMeta.label)}</span></div>`;
-                      })()}
-                    </div>
-                  </div>
-                </button>
-              `).join('')}
-            </div>
-          `).join('') + `
+    const groupedHtml = browserMode === 'table'
+      ? ''
+      : (() => {
+        const grouped = endpoints.reduce((acc: Record<string, EndpointStatus[]>, item: EndpointStatus) => {
+          const key = routeGroup(item.endpoint_path);
+          acc[key] = acc[key] || [];
+          acc[key].push(item);
+          return acc;
+        }, {});
+        const sortedGroups = Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0]));
+        const isLargeSet = endpoints.length > 24;
+        return sortedGroups.map(([group, items]) => {
+          const collapsed = state.collapsedGroups[group] ?? (browserMode === 'grouped' && (isLargeSet || items.length > 8));
+          return apiBrowserGroupHtml(group, items, { compact: browserMode === 'compact', collapsed });
+        }).join('');
+      })();
+    ui.apiList.innerHTML = headerHtml + projectSummaryHtml + browserHeroHtml + browserSummaryHtml + browserModeHtml + `
+            ${browserMode === 'table'
+              ? apiBrowserTableHtml(endpoints)
+              : `<div class="api-browser-body ${browserMode === 'compact' ? 'compact' : 'grouped'}">${groupedHtml}</div>`
+            }
             <div class="sidebar-footer">
               <button class="api-item ${state.currentView === 'settings' ? 'active' : ''}" type="button" onclick="setView('settings')">
                 <div class="api-row">
                   <span class="status-dot healthy"></span>
                   <div class="api-row-main">
                     <div class="api-row-top"><strong>Settings</strong></div>
-                    <div class="api-path">License & Preferences</div>
+                    <div class="api-path">${maintainerMode ? 'License & Preferences' : 'Preferences'}</div>
                   </div>
                 </div>
               </button>
             </div>
           `;
+  }
+  const tableBody = ui.apiList.querySelector('.api-browser-table-body.virtualized') as HTMLElement | null;
+  if (tableBody) {
+    const scrollHandler = (window as any).handleApiBrowserTableScroll;
+    if (typeof scrollHandler === 'function') {
+      tableBody.addEventListener('scroll', scrollHandler, { passive: true });
+    }
+    tableBody.scrollTop = Math.max(0, Number(state.apiBrowserScrollTop || 0));
+  }
+  const syncPinnedOffsets = (window as any).syncApiBrowserPinnedOffsets;
+  if (typeof syncPinnedOffsets === 'function') {
+    syncPinnedOffsets();
   }
 }
 
@@ -1094,7 +1667,7 @@ function renderSidebar() {
     const missingBaseline = group.rows.filter((row: any) => row.status === 'missing_reference').length;
     const matched = group.rows.filter((row: any) => row.status === 'match').length;
     const bits = [`${fmt(group.rows.length)} metric(s)`];
-    if (mismatches) bits.push(`${fmt(mismatches)} need review`);
+    if (mismatches) bits.push(`${fmt(mismatches)} need attention`);
     if (missingBaseline) bits.push(`${fmt(missingBaseline)} without baseline`);
     if (matched) bits.push(`${fmt(matched)} matched`);
     return bits.join(' • ');
@@ -1140,7 +1713,7 @@ function renderSidebar() {
       </div>
 
       <div class="run-detail-card-stats tiny">
-        ${fmt(group.rows.length)} metric(s) • ${fmt(flaggedRows.length)} need review • ${fmt(matchedRows.length)} within range
+        ${fmt(group.rows.length)} metric(s) • ${fmt(flaggedRows.length)} need attention • ${fmt(matchedRows.length)} within range
       </div>
 
       ${topFindings ? `<div class="upload-analysis-highlights"><strong>Top findings:</strong> ${escapeHtml(topFindings)}${hiddenFindingCount ? ` +${hiddenFindingCount} more` : ''}</div>` : ''}
@@ -1153,7 +1726,7 @@ function renderSidebar() {
       ` : ''}
 
       <details class="run-detail-kpi-breakdown">
-        <summary>${flaggedRows.length ? `${fmt(flaggedRows.length)} KPI(s) need review` : `${fmt(group.rows.length)} KPI(s) within baseline`}</summary>
+        <summary>${flaggedRows.length ? `${fmt(flaggedRows.length)} KPI(s) need attention` : `${fmt(group.rows.length)} KPI(s) within baseline`}</summary>
         <div class="table-wrap" style="margin-top:10px;">
           <table class="row-table run-detail-kpi-table">
             <thead>
@@ -1236,15 +1809,15 @@ function renderSidebar() {
       <p>This view compares API values against uploaded baselines for each grain.</p>
       ${missingBaselineGrains ? '<p class="tiny" style="margin-top:8px;">Some grains have no baseline yet. You can view raw API values, then upload a baseline to enable pass/fail checks.</p>' : ''}
     </div>
-    <div class="upload-analysis-summary-grid" style="margin-top:12px;">
-      <div class="meta-card meta-card-compact">
-        <strong>Grains in run</strong>
-        <span>${fmt(totalGrains)}</span>
-      </div>
-      <div class="meta-card meta-card-compact">
-        <strong>Needs review</strong>
-        <span>${fmt(mismatchGrains)}</span>
-      </div>
+      <div class="upload-analysis-summary-grid" style="margin-top:12px;">
+        <div class="meta-card meta-card-compact">
+          <strong>Grains in run</strong>
+          <span>${fmt(totalGrains)}</span>
+        </div>
+        <div class="meta-card meta-card-compact">
+          <strong>Needs attention</strong>
+          <span>${fmt(mismatchGrains)}</span>
+        </div>
       <div class="meta-card meta-card-compact">
         <strong>No baseline</strong>
         <span>${fmt(missingBaselineGrains)}</span>
@@ -1252,11 +1825,11 @@ function renderSidebar() {
     </div>
 
     <div class="history-list" style="margin-top:14px;">
-      ${needsReviewGroups.length ? `<div class="upload-analysis-section-title">Needs review (${fmt(needsReviewGroups.length)})</div>` : ''}
+      ${needsReviewGroups.length ? `<div class="upload-analysis-section-title">Needs attention (${fmt(needsReviewGroups.length)})</div>` : ''}
       ${visibleNeedsReviewGroups.map((group) => renderGroupCard(group)).join('')}
       ${hiddenNeedsReviewGroups.length ? `
         <details class="upload-analysis-more-runs">
-          <summary>Show ${fmt(hiddenNeedsReviewGroups.length)} more grain(s) needing review</summary>
+          <summary>Show ${fmt(hiddenNeedsReviewGroups.length)} more grain(s) needing attention</summary>
           <div class="history-list" style="margin-top:12px;">
             ${hiddenNeedsReviewGroups.map((group) => renderGroupCard(group)).join('')}
           </div>
@@ -1299,13 +1872,13 @@ function renderOverview() {
   const healthPct = endpoints.length ? Math.round(((summary.healthy || 0) / endpoints.length) * 100) : 100;
   ui.overviewMetrics.innerHTML = [
     statCard('Healthy', `${healthPct}%`, 'Healthy right now'),
-    statCard('Needs Care', anomalies.length + Number(summary.unconfirmed || 0), 'APIs to review or finish'),
+    statCard('At risk', anomalies.length + Number(summary.unconfirmed || 0), 'APIs to review or finish'),
   ].join('');
 
   ui.overviewCharts.innerHTML = `
         <div class="chart-card">
           <strong>Project</strong>
-          <div class="chart-value">${project?.name || 'Embedded project'}</div>
+          <div class="chart-value">${project?.name || 'Your project'}</div>
           <div class="tiny">${endpoints.length} APIs • ${anomalies.length} issues • ${recentErrors.length} errors</div>
           ${statusMixChartSvg(endpoints)}
           <div class="legend-row">
@@ -1318,19 +1891,47 @@ function renderOverview() {
       `;
   const needsSetup = endpoints.filter((item) => item.status === 'unconfirmed').length;
   const needsAttention = endpoints.filter((item) => (item.active_anomalies || 0) > 0 || item.status === 'warning').length;
-  ui.overviewAttention.innerHTML = `
+  const firstRunOnboarding = endpoints.length === 0
+    ? renderFirstRunChecklist({
+        title: 'Create your project',
+        description: 'Jin is meant to monitor your own FastAPI app, not the maintainer demo harness.',
+        primaryLabel: 'Set Up APIs',
+        primaryView: 'api',
+        secondaryLabel: 'Open Getting Started',
+        secondaryHref: 'https://amit-devb.github.io/jin/',
+        footer: 'After the first request, come back here to finish dimensions, KPIs, and baselines.',
+      })
+    : '';
+  ui.overviewAttention.innerHTML = endpoints.length === 0
+    ? `
+        ${renderPlainLanguageInsight()}
+        ${firstRunOnboarding}
         <div class="row-card quick-start-card">
-          <strong>Start in APIs</strong>
-          <div class="muted">Pick one API, then upload expected values or configure its fields.</div>
+          <strong>Connect your API</strong>
+          <div class="muted">Open the APIs workspace, choose the endpoint, and confirm dimensions, KPIs, and time from the reflected schema.</div>
           <div class="toolbar" style="margin-top:12px;">
-            <button class="action" type="button" data-view="api">Open APIs</button>
+            <button class="action" type="button" data-view="api">Open API Setup</button>
           </div>
         </div>
         <div class="row-card">
-          <strong>Review Issues next</strong>
-          <div class="muted">${anomalies.length} open issues and ${recentErrors.length} recent errors are waiting there.</div>
+          <strong>What happens next</strong>
+          <div class="muted">Once your first endpoint is connected, Jin will show health, issues, and report guidance for your own project.</div>
+        </div>
+      `
+    : `
+        ${renderPlainLanguageInsight()}
+        <div class="row-card quick-start-card">
+          <strong>Connect your API</strong>
+          <div class="muted">Start with your own API, then upload expected values or configure the fields for the first endpoint.</div>
           <div class="toolbar" style="margin-top:12px;">
-            <button class="action secondary" type="button" data-view="incidents">Open Issues</button>
+            <button class="action" type="button" data-view="api">Set Up APIs</button>
+          </div>
+        </div>
+        <div class="row-card">
+          <strong>Review issues next</strong>
+          <div class="muted">${anomalies.length} issues and ${recentErrors.length} recent errors are waiting there.</div>
+          <div class="toolbar" style="margin-top:12px;">
+            <button class="action secondary" type="button" data-view="incidents">Review Issues</button>
           </div>
         </div>
         <div class="row-card">
@@ -1354,6 +1955,7 @@ function renderPlaybook() {
   }
 
   const workflows = payload.workflows || [];
+  const endpoints = state.status?.endpoints || [];
   const stats = payload.stats || {};
   const tracked = Number(stats.apis_tracked || 0);
   const healthy = Number(stats.healthy || 0);
@@ -1361,16 +1963,16 @@ function renderPlaybook() {
   const setupPending = Number(stats.unconfirmed || 0);
   const healthPct = tracked > 0 ? Math.round((healthy / tracked) * 100) : 100;
   const topRiskText = anomaliesCount > 0
-    ? `${fmt(anomaliesCount)} open issue${anomaliesCount === 1 ? '' : 's'} need triage.`
+    ? `${fmt(anomaliesCount)} open issue${anomaliesCount === 1 ? '' : 's'} need attention.`
     : setupPending > 0
       ? `${fmt(setupPending)} API${setupPending === 1 ? '' : 's'} still need setup.`
       : 'No active blockers right now.';
   const nextActionView = anomaliesCount > 0 ? 'incidents' : 'api';
-  const nextActionLabel = anomaliesCount > 0 ? 'Open Issues' : 'Open APIs';
+  const nextActionLabel = anomaliesCount > 0 ? 'Review Issues' : 'Set Up APIs';
   const nextStepCopy = anomaliesCount > 0
-    ? `${anomaliesCount} issue${anomaliesCount === 1 ? '' : 's'} need review. Open Issues and triage high-impact rows first.`
+    ? `${anomaliesCount} issue${anomaliesCount === 1 ? '' : 's'} need attention. Review Issues and focus on high-impact rows first.`
     : setupPending > 0
-      ? `${setupPending} API${setupPending === 1 ? '' : 's'} still need setup. Open APIs and complete baseline setup.`
+      ? `${setupPending} API${setupPending === 1 ? '' : 's'} still need setup. Set Up APIs and complete baseline setup.`
       : 'No active blockers. Run checks now and generate this week\'s report pack.';
   ui.poPlaybookContent.innerHTML = `
     <div class="playbook-snapshot-grid">
@@ -1385,15 +1987,25 @@ function renderPlaybook() {
         <div class="muted">${fmt(healthPct)}% health score</div>
       </div>
       <div class="row-card playbook-snapshot-card">
-        <span class="tiny">Open Issues</span>
+        <span class="tiny">Issues</span>
         <strong>${fmt(anomaliesCount)}</strong>
-        <div class="muted">Needs triage</div>
+        <div class="muted">Needs attention</div>
       </div>
       <div class="row-card playbook-snapshot-card">
         <span class="tiny">Setup Pending</span>
         <strong>${fmt(setupPending)}</strong>
         <div class="muted">Needs setup</div>
       </div>
+    </div>
+    <div class="row-card" style="margin-bottom:12px;">
+      <strong>Plain-language summary</strong>
+      <div class="muted" style="margin-top:6px;">${endpoints.length === 0
+        ? 'Block release: you do not have a live project yet. Connect your own FastAPI app first.'
+        : anomaliesCount > 0
+          ? `Needs attention: ${fmt(anomaliesCount)} issue${anomaliesCount === 1 ? '' : 's'} need attention. Start with the highest-priority row and work downward.`
+          : setupPending > 0
+            ? `Needs attention: ${fmt(setupPending)} API${setupPending === 1 ? '' : 's'} still need setup. Finish setup before looking for deeper insights.`
+            : 'Safe for now: your project looks healthy. Review the highest-priority project in the portfolio and keep an eye on the weekly report pack.'}</div>
     </div>
     <div class="row-card playbook-next-card" style="margin-bottom:12px;">
       <strong>What to do now</strong>
@@ -1409,7 +2021,7 @@ function renderPlaybook() {
       <div class="playbook-rhythm-grid">
         <div class="playbook-rhythm-item">
           <div class="tiny playbook-rhythm-label">Daily</div>
-          <div class="muted">Run checks and triage high-priority drift in Issues.</div>
+          <div class="muted">Run checks and review high-priority drift in Issues.</div>
         </div>
         <div class="playbook-rhythm-item">
           <div class="tiny playbook-rhythm-label">After expected change</div>
@@ -1438,6 +2050,25 @@ function renderPlaybook() {
 }
 
 function renderProjectWorkflowPanel() {
+  const maintainerMode = isMaintainerMode();
+  const setupCard = document.getElementById('playbook-maintainer-setup') as HTMLElement | null;
+  const workflowPanel = document.getElementById('playbook-core-workflow') as HTMLElement | null;
+  if (setupCard) setupCard.style.display = maintainerMode ? '' : 'none';
+  if (workflowPanel) workflowPanel.style.display = maintainerMode ? '' : 'none';
+  if (!maintainerMode) {
+    [
+      ui.projectWorkflowFeedback,
+      ui.projectWorkflowHealth,
+      ui.projectWorkflowMonitor,
+      ui.projectWorkflowRuns,
+      ui.projectWorkflowReport,
+    ].forEach((node) => {
+      const rowCard = node.closest('.row-card') as HTMLElement | null;
+      if (rowCard) rowCard.style.display = 'none';
+    });
+    return;
+  }
+
   const projects = state.projectsCatalog || [];
   const selectedFromUi = String(ui.projectActiveSelect.value || '').trim();
   const selectedProjectId = selectedFromUi
@@ -1517,7 +2148,7 @@ function renderProjectWorkflowPanel() {
     : noTrackedEndpoints
       ? 'No APIs are tracked yet. Call your APIs once, then save setup and run checks.'
       : endpointsWithBaseline === 0
-        ? `APIs are tracked (${fmt(trackedEndpoints)}), but no baseline is uploaded yet. Open APIs and upload baseline files.`
+        ? `APIs are tracked (${fmt(trackedEndpoints)}), but no baseline is uploaded yet. Set Up APIs and upload baseline files.`
         : runnableWatchJobs.length === 0
           ? 'Setup is saved but no runnable watch jobs are configured yet. Click Save & Apply Setup.'
           : !hasRecentRuns
@@ -1554,16 +2185,62 @@ function renderProjectWorkflowPanel() {
     ui.projectWorkflowMonitor.innerHTML = '';
   } else {
     const projectRows = monitor.projects || [];
+    const summary = monitor.summary || {};
+    const topRiskProject = summary.top_risk_project || null;
+    const healthyProjects = summary.healthy_projects ?? projectRows.filter((item) => String(item.status || '').toLowerCase() === 'healthy').length;
+    const degradedProjects = summary.degraded_projects ?? projectRows.filter((item) => String(item.status || '').toLowerCase() !== 'healthy').length;
+    const projectsWithBaseline = summary.projects_with_baseline ?? projectRows.filter((item) => Number(item.baseline?.coverage_pct || 0) >= 70).length;
+    const averageRisk = summary.average_risk_score ?? (
+      projectRows.length
+        ? projectRows.reduce((acc, item) => acc + Number(item.risk_score || 0), 0) / projectRows.length
+        : 0
+    );
+    const decision = decisionLanguageForProjectHealth({
+      endpoints: projectRows.length,
+      anomalies: Number((topRiskProject as any)?.summary?.anomalies || 0),
+      needsSetup: Number(projectRows.filter((item) => Number(item.baseline?.coverage_pct || 0) < 70).length),
+      needsAttention: degradedProjects,
+      topRiskScore: Number(topRiskProject?.risk_score || 0),
+    });
+    const monitorCards = [
+      statCard('Projects', fmt(monitor.count || projectRows.length), 'Tracked across the portfolio'),
+      statCard('Healthy', fmt(healthyProjects), 'Projects currently stable'),
+      statCard('At risk', fmt(degradedProjects), 'Projects needing attention'),
+      statCard('Avg risk', `${Math.round(Number(averageRisk || 0))}%`, 'Portfolio risk snapshot'),
+    ].join('');
+    const portfolioNextStep = topRiskProject
+      ? (decision.label === 'Block release'
+        ? 'Treat this portfolio as blocked until the highest-risk project is addressed.'
+        : decision.label === 'Needs attention'
+          ? 'Review the highest-risk project first, then compare it with the rest of the portfolio.'
+          : 'The portfolio looks safe for now. Keep watching the highest-risk project and recheck weekly.')
+      : 'Keep the portfolio view open while you review project health and baseline coverage.';
     ui.projectWorkflowMonitor.innerHTML = `
       <div class="row-card">
         <strong>Portfolio Health</strong>
         <div class="tiny" style="margin-top:6px;">
-          Projects: ${fmt(monitor.count || projectRows.length)} • Generated: ${fmtDate(monitor.generated_at)}
+          Projects: ${fmt(monitor.count || projectRows.length)} • Baseline coverage: ${fmt(projectsWithBaseline)} • Generated: ${fmtDate(monitor.generated_at)}
         </div>
+        <div class="metric-row" style="margin-top:12px;">
+          ${monitorCards}
+        </div>
+        <div class="row-card ${decision.tone}" style="margin-top:12px;">
+          <strong>${decision.label}</strong>
+          <div class="tiny" style="margin-top:6px;">${escapeHtml(decision.detail)} ${escapeHtml(portfolioNextStep)}</div>
+        </div>
+        ${topRiskProject ? `
+          <div class="sidebar-card" style="margin-top:12px;">
+            <strong>Top Risk Project</strong>
+            <div class="tiny" style="margin-top:6px;">${escapeHtml(String(topRiskProject.name || 'Unknown project'))} • ${decision.label} • risk ${Math.round(Number(topRiskProject.risk_score || 0))}%</div>
+            <div class="tiny muted" style="margin-top:6px;">${escapeHtml(Array.isArray(topRiskProject.risk_reasons) ? topRiskProject.risk_reasons.join(' • ') : '')}</div>
+            ${topRiskProject.id ? `<div class="toolbar compact" style="margin-top:10px;"><button class="action secondary tiny" type="button" onclick="focusPortfolioProject('${escapeHtml(String(topRiskProject.id))}')">Focus Project</button></div>` : ''}
+          </div>
+        ` : ''}
         <div class="history-list" style="margin-top:10px;">
           ${projectRows.slice(0, 6).map((item) => `
             <div class="history-item">
-              <strong>${item.name}</strong> • ${item.status || 'unknown'} • issues: ${fmt(item.summary?.anomalies || 0)} • APIs with targets: ${fmt(item.baseline?.endpoints_with_baseline || 0)}
+              <strong>${item.name}</strong> • ${item.status || 'unknown'} • ${String(item.risk_label || 'watch')} • risk ${Math.round(Number(item.risk_score || 0))}% • issues: ${fmt(item.summary?.anomalies || 0)} • APIs with targets: ${fmt(item.baseline?.endpoints_with_baseline || 0)}
+              ${item.id ? `<div class="toolbar compact" style="margin-top:8px;"><button class="action ghost tiny" type="button" onclick="focusPortfolioProject('${escapeHtml(String(item.id))}')">Focus</button></div>` : ''}
             </div>
           `).join('') || '<div class="history-item">No project monitor snapshot returned.</div>'}
         </div>
@@ -1662,7 +2339,7 @@ function renderIncidents() {
     if (normalized === 'snoozed') return 'Deferred';
     if (normalized === 'suppressed') return 'Muted';
     if (normalized === 'resolved') return 'Resolved';
-    return 'Needs review';
+    return 'Needs attention';
   };
   const severityLabel = (value: string | null | undefined) => {
     const normalized = String(value || 'medium').toLowerCase();
@@ -1675,6 +2352,12 @@ function renderIncidents() {
     if (normalized === 'resolved') return 'resolved';
     if (normalized === 'acknowledged') return 'acknowledged';
     return 'active';
+  };
+  const decisionPillClass = (item: any) => {
+    const decisionTone = incidentDecisionTone(item);
+    if (decisionTone === 'danger') return 'danger';
+    if (decisionTone === 'warning') return 'warning';
+    return 'healthy';
   };
   const confidenceLabel = (value: unknown) => {
     const numeric = Number(value);
@@ -1741,19 +2424,19 @@ function renderIncidents() {
     `
     : '';
   const businessSortActive = state.incidentSort === 'business';
-  const triageHint = hasActiveFilters
+  const issueQueueHint = hasActiveFilters
     ? `Showing ${fmt(queueStart)}-${fmt(queueEnd)} of ${fmt(anomalies.length)} after filters.`
     : `Showing ${fmt(queueStart)}-${fmt(queueEnd)} of ${fmt(anomalies.length)} in priority order.`;
   const topIssueCta = firstOpenIssue
     ? `<button class="action" type="button" onclick="showIncident(${firstOpenIssue.id})">Review Top Issue</button>`
-    : '<button class="action" type="button" data-view="api">Open APIs</button>';
+    : '<button class="action" type="button" data-view="api">Set Up APIs</button>';
   const filterHidRows = anomalies.length === 0 && allRows.length > 0 && hasActiveFilters;
   ui.incidentsList.innerHTML = anomalies.length ? `
         ${filterSummaryCard}
         ${issuesKpiStrip}
         <div class="row-card issue-queue-summary" style="margin-bottom:10px;">
-          <strong>Triage Queue</strong>
-          <div class="tiny" style="margin-top:6px;">${triageHint}</div>
+          <strong>Issue Review Queue</strong>
+          <div class="tiny" style="margin-top:6px;">${issueQueueHint}</div>
           <div class="tiny muted issue-queue-note" style="margin-top:4px;">
             ${businessSortActive ? 'Business ranking is active.' : 'Priority ordering is active.'}
             Start with high-priority rows first.
@@ -1763,7 +2446,7 @@ function renderIncidents() {
             <button class="action secondary" type="button" data-view="errors">View Errors</button>
           </div>
         </div>
-        <div class="issues-card-list" role="list" aria-label="Issue triage queue">
+        <div class="issues-card-list" role="list" aria-label="Issue review queue">
           ${paged.items.map((item) => `
             <article class="issue-card issue-card-${String(item.severity || 'medium').toLowerCase()} issue-status-${String(item.status || 'active').toLowerCase()}" role="listitem" data-issue-id="${item.id}">
               <div class="issue-card-select">
@@ -1779,6 +2462,8 @@ function renderIncidents() {
                   <div class="issue-card-priority">
                     <span class="status-pill ${inferSeverityClass(item)}">${severityLabel(item.severity)}</span>
                     <span class="status-pill ${statusPillClass(item.status)}">${statusLabel(item.status)}</span>
+                    <span class="status-pill ${businessPriorityBand(item).toLowerCase()}">Priority ${businessPriorityBand(item)}</span>
+                    <span class="status-pill ${decisionPillClass(item)}">${incidentDecisionLabel(item)}</span>
                     ${confidenceLabel(item.confidence) ? `<span class="tiny issue-card-confidence">${confidenceLabel(item.confidence)}</span>` : ''}
                   </div>
                 </div>
@@ -1796,14 +2481,14 @@ function renderIncidents() {
                   </div>
                   <div class="issue-card-meta-item">
                     <span class="issue-card-meta-label">Decision status</span>
-                    <span class="tiny muted issue-card-meta-value">${statusLabel(item.status)} • ${severityLabel(item.severity)} priority</span>
+                    <span class="tiny muted issue-card-meta-value">${incidentDecisionLabel(item)} • ${statusLabel(item.status)} • ${severityLabel(item.severity)} priority</span>
                   </div>
                 </div>
                 <details class="issue-priority-details issue-card-rank">
-                  <summary>Why this was flagged</summary>
+                  <summary>${incidentDecisionLabel(item)} - why this was flagged</summary>
                   <div class="tiny muted">${escapeHtml(trimCopy(incidentWhyThisMatters(item), 180))}</div>
                   <div class="tiny muted" style="margin-top:4px;">${escapeHtml(trimCopy(item.change_since_last_healthy_run || 'Compared with baseline.', 160))}</div>
-                  <div class="tiny muted" style="margin-top:4px;">Priority score ${Math.round(businessPriorityScore(item))}: ${escapeHtml(businessPriorityBreakdown(item).join(' • '))}</div>
+          <div class="tiny muted" style="margin-top:4px;">Priority score ${Math.round(businessPriorityScore(item))} • ${businessPriorityBand(item)} priority • ${escapeHtml(businessPriorityBreakdown(item).join(' • '))}</div>
                 </details>
                 <div class="toolbar compact issue-card-actions">
                   <button class="action" type="button" onclick="showIncident(${item.id})">Open Details</button>
@@ -1825,7 +2510,7 @@ function renderIncidents() {
       ` : filterHidRows ? `
         <div class="empty empty-center issue-empty-state">
           <strong>No issues match these filters.</strong>
-          <div class="tiny" style="margin-top:6px;">${activeFilterSummary ? `Active filters: ${escapeHtml(activeFilterSummary)}. ` : ''}Clear filters to see the full triage queue again.</div>
+          <div class="tiny" style="margin-top:6px;">${activeFilterSummary ? `Active filters: ${escapeHtml(activeFilterSummary)}. ` : ''}Clear filters to see the full issue queue again.</div>
           <div class="toolbar" style="margin-top:12px; justify-content:center;">
             <button class="action secondary" type="button" onclick="clearIncidentFilters()">Clear filters</button>
           </div>
@@ -1834,12 +2519,12 @@ function renderIncidents() {
         <div class="empty empty-center issue-empty-state">
           <strong>No issues right now.</strong>
           <div class="tiny" style="margin-top:6px;">
-            Run checks regularly and return here when any drift needs review.
-            If you expected upload mismatches, open Issues from the upload analysis panel to refresh and reset filters.
+            Run checks regularly and return here when any drift needs attention.
+            If you expected upload mismatches, review Issues from the upload analysis panel to refresh and reset filters.
           </div>
           <div class="toolbar" style="margin-top:12px; justify-content:center;">
             ${hasActiveFilters ? '<button class="action secondary" type="button" onclick="clearIncidentFilters()">Clear filters</button>' : ''}
-            <button class="action" type="button" data-view="api">Open APIs</button>
+            <button class="action" type="button" data-view="api">Set Up APIs</button>
           </div>
         </div>
       `;
@@ -2034,7 +2719,7 @@ function hasStrictTimeFieldCandidate(fields: FieldRole[] = []): boolean {
   });
 }
 
-export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string, any>, metrics: any[] = []) {
+export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string, any>, metrics: any[] = [], detail: EndpointDetail | null = null) {
   const dims = new Set((config.dimension_fields || []) as string[]);
   const kpis = new Set((config.kpi_fields || []) as string[]);
   const timeField = config.time_field || null;
@@ -2043,6 +2728,8 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
   const poMode = state.poMode !== false;
   const setupNotConfirmed = !Boolean(config.confirmed);
   const firstTimeSetup = dims.size === 0 && kpis.size === 0 && !timeField;
+  const responseModelMissing = detail?.response_model_present === false;
+  const modelAdvice = responseModelMissing ? null : modelSetupAdvice(fields || []);
   
   const metricMapByField = new Map<string, string>();
   if (metrics) {
@@ -2063,7 +2750,45 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
       <div style="display:flex; align-items:center; gap:6px;"><div style="width:8px; height:8px; border-radius:2px; background:var(--brand);"></div> <strong>Time</strong>: Transaction timestamp</div>
     </div>
   `;
-  const firstTimeGuideHtml = firstTimeSetup
+  const responseModelHtml = responseModelMissing
+    ? `
+      <div class="feedback danger" style="margin-bottom:14px;">
+        <strong>Pydantic response model required</strong>
+        <div class="tiny" style="margin-top:6px;">Define <code>response_model</code> on this FastAPI route first. Jin uses the model to discover fields and time candidates before setup can be saved.</div>
+      </div>
+    `
+    : '';
+  const modelAutoSuggestReady = Boolean(modelAdvice?.ready);
+  const modelHasAnyCandidates = Boolean(modelAdvice && modelAdvice.candidateCount > 0);
+  const modelRoleHints = new Map<string, 'time' | 'dimension' | 'kpi'>();
+  const addModelRoleHint = (value: unknown, role: 'time' | 'dimension' | 'kpi'): void => {
+    const name = String(value || '').trim();
+    if (!name || modelRoleHints.has(name)) return;
+    modelRoleHints.set(name, role);
+  };
+  if (modelAdvice) {
+    addModelRoleHint(modelAdvice.timeCandidates?.[0], 'time');
+    addModelRoleHint(modelAdvice.segmentCandidates?.[0], 'dimension');
+    addModelRoleHint(modelAdvice.metricCandidates?.[0], 'kpi');
+  }
+  const modelFirstHtml = responseModelMissing
+    ? ''
+    : modelAutoSuggestReady
+    ? `
+      <div class="feedback success" style="margin-bottom:14px;">
+        <strong>Model first</strong>
+        <div class="tiny" style="margin-top:6px;">Jin can pre-fill Segment, Metric, and Time from the Pydantic response model before any traffic arrives.</div>
+      </div>
+    `
+    : `
+      <div class="feedback warning" style="margin-bottom:14px;">
+        <strong>${escapeHtml(modelAdvice?.summary || 'Response model needs clearer fields')}</strong>
+        <div class="tiny" style="margin-top:6px;">${escapeHtml(modelAdvice?.detail || 'Add typed Segment, Metric, or Time candidates to make setup automatic.')}</div>
+      </div>
+    `;
+  const firstTimeGuideHtml = responseModelMissing
+    ? ''
+    : firstTimeSetup
     ? `
       <div class="row-card" style="margin-bottom:14px;">
         <strong>Quick start</strong>
@@ -2120,6 +2845,7 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
     type: string;
     role: string;
     suggested: boolean;
+    timeCandidate: boolean;
     likely: boolean;
   };
 
@@ -2131,7 +2857,19 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
       const hasTechnicalPath = shownName !== name;
       const rawType = typeof field === 'string' ? '' : (field.annotation || field.type || '');
       const type = fieldTypeCaption(rawType);
-      const role = name === timeField ? 'time' : (dims.has(name) ? 'dimension' : (kpis.has(name) ? 'kpi' : (config.excluded_fields?.includes(name) ? 'exclude' : 'ignore')));
+      const timeCandidate = typeof field === 'string'
+        ? false
+        : Boolean(field.time_candidate || String(field.suggested_role || '').toLowerCase() === 'time');
+      const modelRoleHint = modelRoleHints.get(name) || null;
+      const role = name === timeField
+        ? 'time'
+        : (timeCandidate
+          ? 'time'
+          : (dims.has(name)
+            ? 'dimension'
+            : (kpis.has(name)
+              ? 'kpi'
+              : (modelRoleHint || (config.excluded_fields?.includes(name) ? 'exclude' : 'ignore')))));
       const suggested = typeof field === 'string' ? false : Boolean(field.suggested);
       return {
         name,
@@ -2141,6 +2879,7 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
         type,
         role,
         suggested,
+        timeCandidate,
         likely: likelyBusinessField(name, rawType, suggested),
       };
     })
@@ -2183,18 +2922,38 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
       </div>
     `
     : '';
+  const bestCandidateBadgesByField = new Map<string, { label: string; role: 'segment' | 'metric' | 'time' }[]>();
+  const addBestCandidateBadge = (fieldName: string | undefined, label: string, role: 'segment' | 'metric' | 'time'): void => {
+    const cleanName = String(fieldName || '').trim();
+    if (!cleanName) return;
+    const badges = bestCandidateBadgesByField.get(cleanName) || [];
+    if (!badges.some((badge) => badge.role === role)) {
+      badges.push({ label, role });
+      bestCandidateBadgesByField.set(cleanName, badges);
+    }
+  };
+  addBestCandidateBadge(modelAdvice?.segmentCandidates?.[0], 'Best Segment', 'segment');
+  addBestCandidateBadge(modelAdvice?.metricCandidates?.[0], 'Best Metric', 'metric');
+  addBestCandidateBadge(modelAdvice?.timeCandidates?.[0], 'Best Time', 'time');
 
   const gridHtml = visibleEntries.map((entry) => {
     const { name, shownName, hasTechnicalPath, type, role } = entry;
     const extractionRule = config.time_extraction_rule || 'single';
-    const timePreviewText = String(state.timePreview || 'No timeline preview yet');
-    const timePreviewPending = /no sample run yet|no recent sample yet|choose a time field|choose your business time field|no sample value found/i.test(timePreviewText);
+    const candidateBadges = bestCandidateBadgesByField.get(name) || [];
+    const candidateClasses = candidateBadges.length
+      ? ` best-candidate ${candidateBadges.map((badge) => `best-${badge.role}`).join(' ')}`
+      : '';
+    const previewText = role === 'time'
+      ? String(state.timePreview || `Model-selected time field: ${shownName || name}`)
+      : String(state.timePreview || 'No timeline preview yet');
+    const previewPending = /no sample run yet|no recent sample yet|choose a time field|choose your business time field|no sample value found/i.test(previewText);
 
     return `
-      <div class="field-role-card ${role === 'dimension' ? 'active-dimension' : (role === 'kpi' ? 'active-kpi' : (role === 'exclude' ? 'active-exclude' : ''))}" data-field-name="${name}">
+      <div class="field-role-card ${role === 'time' ? 'active-time' : (role === 'dimension' ? 'active-dimension' : (role === 'kpi' ? 'active-kpi' : (role === 'exclude' ? 'active-exclude' : '')))}${candidateClasses}" data-field-name="${name}">
         <div class="field-info">
           <div class="field-name">
             ${escapeHtml(shownName || name)}
+            ${candidateBadges.map((badge) => `<span class="chip field-candidate-chip field-candidate-chip--${badge.role}">${badge.label}</span>`).join('')}
             ${metricMapByField.has(name) ? `<span class="chip" style="margin-left:8px; background:rgba(34, 197, 94, 0.1); color:var(--green-neon); border-color:var(--green-neon);">${metricMapByField.get(name)} Metric</span>` : ''}
           </div>
           ${hasTechnicalPath ? `<div class="tiny muted" style="margin-top:3px;">${escapeHtml(name)}</div>` : ''}
@@ -2219,12 +2978,12 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
         </div>
         ${role === 'time' ? `
           <div class="time-extraction-container">
-             <div class="time-verify-preview ${state.timePreview && !timePreviewPending ? 'verified' : ''}" style="margin-top:0;">
+             <div class="time-verify-preview ${previewText && !previewPending ? 'verified' : ''}" style="margin-top:0;">
                 <span>Chronology Pulse:</span>
-                <strong id="time-preview-val">${escapeHtml(timePreviewText)}</strong>
+                <strong id="time-preview-val">${escapeHtml(previewText)}</strong>
                 <a href="#" class="tweak-link" onclick="toggleTimeSettings('${name}', event)" style="margin-left:auto; font-size:11px; color:var(--brand); text-decoration:none;">${state.showTimeSettings?.[name] ? 'Hide settings' : 'Tweak settings'}</a>
              </div>
-             ${timePreviewPending ? '<div class="tiny muted" style="margin-top:6px;">Setup is not blocked. Save config now and run one check to unlock timeline preview.</div>' : ''}
+             ${previewPending ? '<div class="tiny muted" style="margin-top:6px;">Setup is not blocked. Save config now and run one check to unlock timeline preview.</div>' : ''}
 
              ${state.detectedTimeSources && state.detectedTimeSources.length > 1 && !config?.time_pin ? `
                 <div class="source-picker" style="margin-top:8px; padding:10px; background:rgba(255,165,0,0.05); border:1px dashed orange; border-radius:8px;">
@@ -2293,11 +3052,12 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
     <div class="feedback info" style="margin-top:12px;">
       License is not activated for this project yet, but setup stays editable in this build.
       Activate Business later only if you want multi-project enforcement.
-    </div>
-  ` : '';
-
+      </div>
+    ` : '';
   ui.fieldRoleGrid.innerHTML = `
     <div style="position:relative">
+      ${responseModelHtml}
+      ${modelFirstHtml}
       ${firstTimeGuideHtml}
       ${poModeHintHtml}
       ${focusControlHtml}
@@ -2323,11 +3083,19 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
     const summaryMap = state.autoSuggestSummaryByApi || {};
     const suggestSummary = selectedPath ? summaryMap[selectedPath] : null;
     const hasRecentSamples = hasSetupSamples(state.activeApiDetail);
-    const suggestCopy = suggestSummary
+    const responseModelMissing = detail.response_model_present === false;
+    const modelAdvice = responseModelMissing ? null : modelSetupAdvice(detail.fields || detail.schema_contract?.fields || []);
+    const modelAutoSuggestReady = Boolean(modelAdvice?.ready);
+    const modelHasAnyCandidates = Boolean(modelAdvice && modelAdvice.candidateCount > 0);
+    const suggestCopy = responseModelMissing
+      ? 'Define a Pydantic response model first. Jin needs it to discover fields and time candidates before setup can be saved.'
+      : suggestSummary
       ? `${suggestSummary.headline} ${suggestSummary.details}`
-      : (hasRecentSamples
-        ? 'Use auto-suggest to pre-fill segment and metric fields from recent API traffic or Pydantic examples.'
-        : 'No recent sample yet. You can still configure Segment/Metric/Time now, then run one check to unlock auto-suggest.');
+      : (modelAutoSuggestReady
+        ? 'Jin can pre-fill Segment, Metric, and Time from the Pydantic response model even before traffic arrives.'
+        : (hasRecentSamples
+          ? `Use auto-suggest to pre-fill setup from recent API traffic or Pydantic examples. ${modelAdvice?.detail || ''}`
+          : `${modelAdvice?.summary || 'The response model is present, but Jin needs clearer typed fields or examples to pre-fill setup.'} ${modelAdvice?.detail || ''}`.trim()));
     storyContainer.innerHTML = `
       <div class="config-story-card ${hasRoles ? 'active' : ''}" style="margin-top:24px; border-top:1px solid var(--line); padding-top:24px;">
         <div class="story-header" style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
@@ -2343,17 +3111,17 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
             : 'Tip: Select at least one group and one measurable number for the best results.'}
         </div>
         <div class="toolbar" style="margin-top:20px; justify-content:center;">
-          <button class="action" id="save-config-story-button" type="button" onclick="saveConfig()">
-            Save configuration and continue to baselines
+          <button class="action" id="save-config-story-button" type="button" onclick="saveConfig()" ${responseModelMissing ? 'disabled title="Define response_model first."' : ''}>
+            ${responseModelMissing ? 'Define response_model first' : 'Save configuration and continue to baselines'}
           </button>
         </div>
-        <div class="row-card" style="margin-top:14px; text-align:left;">
-          <strong>Need help picking fields?</strong>
-          <div class="tiny muted" id="auto-suggest-summary" style="margin-top:8px;">
-            ${escapeHtml(suggestCopy)}
-          </div>
-          <div class="toolbar" style="margin-top:10px;">
-            <button class="action secondary" id="auto-suggest-button" type="button" onclick="runMagicGuess(true)" ${hasRecentSamples ? '' : 'disabled'}>
+          <div class="row-card" style="margin-top:14px; text-align:left;">
+            <strong>Need help picking fields?</strong>
+            <div class="tiny muted" id="auto-suggest-summary" style="margin-top:8px;">
+              ${escapeHtml(suggestCopy)}
+            </div>
+            <div class="toolbar" style="margin-top:10px;">
+            <button class="action secondary" id="auto-suggest-button" type="button" onclick="runMagicGuess(true)" ${(!responseModelMissing && (hasRecentSamples || modelHasAnyCandidates)) ? '' : 'disabled'}>
               ${hasRoles ? 'Re-run auto-suggest' : 'Auto-suggest setup'}
             </button>
           </div>
@@ -2373,10 +3141,18 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
 }
 
 function renderApiDetail(detail: EndpointDetail) {
+  const apiView = document.getElementById('view-api');
+  if (apiView) {
+    apiView.classList.remove('api-browser-only');
+    apiView.classList.add('api-browser-detail-open');
+  }
   ui.apiEmpty.style.display = 'none';
   ui.apiWorkspace.style.display = 'grid';
+  ui.apiWorkspace.classList.remove('api-workspace-entering');
+  void ui.apiWorkspace.offsetWidth;
+  ui.apiWorkspace.classList.add('api-workspace-entering');
   ui.apiTitle.textContent = detail.endpoint_path;
-  ui.apiSubtitle.textContent = 'Upload references, review issues, and configure this API in one place.';
+  ui.apiSubtitle.textContent = 'Review health, baselines, checks, and issues.';
   ui.apiMethod.textContent = detail.http_method || 'GET';
   ui.apiPath.textContent = detail.endpoint_path;
   const templateBase = `/jin/template/${slug(detail.endpoint_path)}`;
@@ -2403,6 +3179,9 @@ function renderApiDetail(detail: EndpointDetail) {
   const hasIssues = (detail.anomaly_history || []).length > 0;
   const hasUploads = (detail.upload_activity || []).length > 0;
   const hasRuns = monitoringRuns.length > 0 || (detail.recent_history || []).length > 0;
+  const openIssueCount = (detail.anomaly_history || [])
+    .filter((item: any) => String(item?.status || 'active') !== 'resolved')
+    .length;
   const selectedUploadAnalysisAt = String((state as any).selectedUploadAnalysisAt || '');
   const uploadAnalysisHistoryRows = detail.upload_analysis_history || [];
   const selectedUploadAnalysis = selectedUploadAnalysisAt
@@ -2445,23 +3224,40 @@ function renderApiDetail(detail: EndpointDetail) {
 
   // Existing meta cards...
   const selectedStatus = (state.status?.endpoints || []).find((item) => item.endpoint_path === detail.endpoint_path);
-  const setupMeta = setupHealthMeta({
-    endpoint_path: detail.endpoint_path,
-    http_method: detail.http_method || 'GET',
-    status: selectedStatus?.status || 'warning',
-    dimension_fields: selectedStatus?.dimension_fields || (detail.config?.dimension_fields || []),
-    kpi_fields: selectedStatus?.kpi_fields || (detail.config?.kpi_fields || []),
-    time_field: selectedStatus?.time_field || detail.config?.time_field || null,
-    time_required: selectedStatus?.time_required ?? detail.config?.time_required,
-    confirmed: detail.operator_metadata?.confirmed ?? selectedStatus?.confirmed ?? false,
-    last_upload_at: meta.last_upload_at || selectedStatus?.last_upload_at || null,
-  });
+  const responseModelMissing = detail.response_model_present === false;
+  const setupMeta = responseModelMissing
+    ? {
+        label: 'Define response model',
+        tone: 'danger',
+        hint: 'Add response_model on this FastAPI route first. Jin uses it to discover fields and time candidates.',
+      }
+    : setupHealthMeta({
+        endpoint_path: detail.endpoint_path,
+        http_method: detail.http_method || 'GET',
+        status: selectedStatus?.status || 'warning',
+        dimension_fields: selectedStatus?.dimension_fields || (detail.config?.dimension_fields || []),
+        kpi_fields: selectedStatus?.kpi_fields || (detail.config?.kpi_fields || []),
+        time_field: selectedStatus?.time_field || detail.config?.time_field || null,
+        time_required: selectedStatus?.time_required ?? detail.config?.time_required,
+        confirmed: detail.operator_metadata?.confirmed ?? selectedStatus?.confirmed ?? false,
+        last_upload_at: meta.last_upload_at || selectedStatus?.last_upload_at || null,
+      });
   ui.apiMetaGrid.innerHTML = [
-    ['Status', (state.status?.endpoints || []).find((item) => item.endpoint_path === detail.endpoint_path)?.status || 'healthy'],
-    ['Setup', setupMeta.label],
-    ['Last Check', fmtDate(meta.last_observed_at)],
-    ['Last Upload', fmtDate(meta.last_upload_at)],
-    ['Checks', fmt(meta.observation_count)],
+    ['Status', `
+      <strong>${escapeHtml((state.status?.endpoints || []).find((item) => item.endpoint_path === detail.endpoint_path)?.status || 'healthy')}</strong>
+      <div class="tiny muted" style="margin-top:4px;">Last check ${fmtDate(meta.last_observed_at)}</div>
+    `],
+    ['Setup', `
+      <strong>${escapeHtml(setupMeta.label)}</strong>
+      <div class="tiny muted" style="margin-top:4px;">${escapeHtml(setupMeta.hint)}</div>
+    `],
+    ['Activity', `
+      <strong>${fmt(meta.observation_count)} checks</strong>
+      <div class="tiny muted" style="margin-top:4px;">Last upload ${fmtDate(meta.last_upload_at)}</div>
+    `],
+    ['Issues', openIssueCount > 0
+      ? `<span class="status-pill warning">${fmt(openIssueCount)} open</span><div class="tiny muted" style="margin-top:4px;">Review Issues</div>`
+      : '<span class="status-pill healthy">Safe for now</span><div class="tiny muted" style="margin-top:4px;">No open issues</div>'],
   ].map(([label, value]) => `
         <div class="meta-card meta-card-compact">
           <strong>${label}</strong>
@@ -2550,13 +3346,10 @@ function renderApiDetail(detail: EndpointDetail) {
 
   const starter = document.getElementById('api-start-panel');
   if (starter) {
-    const openIssueCount = (detail.anomaly_history || [])
-      .filter((item: any) => String(item?.status || 'active') !== 'resolved')
-      .length;
     const setupDone = Boolean(isConfirmed);
     const baselineDone = setupDone && Boolean(hasRefs);
     const monitorDone = baselineDone && Boolean(hasRuns);
-    const triageDone = monitorDone && openIssueCount === 0;
+    const reviewDone = monitorDone && openIssueCount === 0;
     const showStarter = state.currentApiTab === 'summary';
     starter.style.display = showStarter ? 'block' : 'none';
     const stepBadge = (done: boolean, active: boolean): string => (
@@ -2588,8 +3381,8 @@ function renderApiDetail(detail: EndpointDetail) {
           : openIssueCount > 0
             ? {
                 title: 'Step 4: Review issues',
-                copy: 'Some checks are outside target. Triage and resolve what changed.',
-                cta: 'Open Issues',
+                copy: 'Some checks are outside target. Review and resolve what changed.',
+              cta: 'Review Issues',
                 action: "setView('incidents')",
               }
             : {
@@ -2654,16 +3447,16 @@ function renderApiDetail(detail: EndpointDetail) {
                 </div>
                 ${stepBadge(monitorDone && openIssueCount === 0, monitorDone && openIssueCount > 0)}
               </div>
-              <p>Triage anomalies and decide expected baseline vs real incident.</p>
-              <button class="action secondary tiny" style="margin-top:10px;" onclick="setView('incidents')">Open Issues</button>
+              <p>Review anomalies and decide expected baseline vs real incident.</p>
+              <button class="action secondary tiny" style="margin-top:10px;" onclick="setView('incidents')">Review Issues</button>
             </div>
-            <div class="starter-step ${triageDone ? 'active-step' : ''}">
+            <div class="starter-step ${reviewDone ? 'active-step' : ''}">
               <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
                 <div style="display:flex; align-items:center; gap:8px;">
                   <div class="wizard-step-icon" style="width:20px; height:20px; font-size:10px;">5</div>
                   <strong>Generate report</strong>
                 </div>
-                ${stepBadge(triageDone, triageDone)}
+                ${stepBadge(reviewDone, reviewDone)}
               </div>
               <p>Create a PO-ready report with health, drift, and next actions.</p>
               <button class="action secondary tiny" style="margin-top:10px;" onclick="setView('reports')">Open Reports</button>
@@ -2721,20 +3514,29 @@ function renderApiDetail(detail: EndpointDetail) {
     }
     return item.why_flagged || item.ai_explanation || 'No details yet.';
   };
-  ui.apiIncidentHistory.innerHTML = anomalyHistory.length ? anomalyHistory.slice(0, 10).map((item) => `
-        <div class="history-item">
-          <div style="display:flex; justify-content:space-between; gap:12px;">
-            <strong>${friendlyMetricLabel(item.kpi_field)} • ${item.status || 'active'}</strong>
-            <span class="status-pill ${inferSeverityClass(item)}">${item.status || item.severity || 'active'}</span>
+  ui.apiIncidentHistory.innerHTML = anomalyHistory.length ? anomalyHistory.slice(0, 10).map((item) => {
+    const severityClass = inferSeverityClass(item);
+    const issueStatus = item.status || item.severity || 'active';
+    const changeLine = item.change_since_last_healthy_run || 'No earlier comparison details.';
+    return `
+        <div class="history-item api-issue-card api-issue-card-${severityClass}">
+          <div class="api-issue-card-head">
+            <div class="api-issue-card-head-copy">
+              <strong>${friendlyMetricLabel(item.kpi_field)}</strong>
+              <div class="tiny muted api-issue-card-subline">${escapeHtml(changeLine)}</div>
+            </div>
+            <span class="status-pill ${severityClass}">${escapeHtml(issueStatus)}</span>
           </div>
-          <div class="muted">${issueSummary(item)}</div>
-          <div class="tiny" style="margin-top:5px;">${item.change_since_last_healthy_run || 'No earlier comparison details.'}</div>
-          <div class="tiny" style="margin-top:5px;">Detected ${fmtDate(item.detected_at)} • Baseline ${item.baseline_used == null ? 'not set' : fmt(item.baseline_used)}</div>
-          <div class="toolbar" style="margin-top:8px;">
-            <button class="action ghost" type="button" onclick="showIncident(${item.id})">Open</button>
+          <div class="api-issue-card-summary">${escapeHtml(issueSummary(item))}</div>
+          <div class="api-issue-card-meta tiny muted">
+            Detected ${fmtDate(item.detected_at)} • Baseline ${item.baseline_used == null ? 'not set' : fmt(item.baseline_used)}
+          </div>
+          <div class="toolbar compact api-issue-card-actions">
+            <button class="action ghost" type="button" onclick="showIncident(${item.id})">Open issue</button>
           </div>
         </div>
-      `).join('') : emptyState('No issues for this API yet.');
+      `;
+  }).join('') : emptyState('No issues for this API yet.');
 
   if (monitoringRuns.length) {
     const pagedRuns = paginate(monitoringRuns, state.runPage, 8);
@@ -2798,7 +3600,7 @@ function renderApiDetail(detail: EndpointDetail) {
                   <td>
                     <div class="toolbar compact">
                       ${anomalies > 0
-                        ? '<button class="action secondary tiny" type="button" onclick="setView(\'incidents\')">Open Issues</button>'
+                        ? '<button class="action secondary tiny" type="button" onclick="setView(\'incidents\')">Review Issues</button>'
                         : uploadMismatchRuns > 0
                           ? '<button class="action ghost tiny" type="button" onclick="switchApiTab(\'history\')">Upload Findings</button>'
                           : '<button class="action ghost tiny" type="button" onclick="switchApiTab(\'summary\')">View KPIs</button>'}
@@ -2910,7 +3712,7 @@ function renderApiDetail(detail: EndpointDetail) {
       if (status === 'anomaly') {
         return {
           pillClass: 'danger',
-          label: 'Needs review',
+          label: 'Needs attention',
           tooltip: 'At least one metric moved outside your allowed tolerance.',
         };
       }
@@ -3128,7 +3930,7 @@ function renderApiDetail(detail: EndpointDetail) {
         ${renderPagination('uploads', pagedUploadEvents.page, pagedUploadEvents.totalPages)}
       ` : `${uploadHistoryBlock}${emptyState('No baseline rows are stored for this API yet.')}`;
 
-  renderFieldRoles(detail.fields || [], detail.setup_config || detail.config || {}, detail.metrics || []);
+  renderFieldRoles(detail.fields || [], detail.setup_config || detail.config || {}, detail.metrics || [], detail);
   renderSavedViews();
   renderApiSections();
   if (state.currentApiTab === 'configuration' && typeof (window as any).refreshTimePreview === 'function') {
@@ -3145,7 +3947,7 @@ function renderApiDetail(detail: EndpointDetail) {
     const hasSamples = hasSetupSamples(detail);
     const selectedPath = String(detail.endpoint_path || state.selectedApi || '').trim();
     const triggeredMap = ((state as any).autoSuggestTriggeredByApi || {}) as Record<string, boolean>;
-    if (!hasSetup && hasSamples && selectedPath && !triggeredMap[selectedPath]) {
+    if (!hasSetup && hasSamples && selectedPath && !triggeredMap[selectedPath] && !responseModelMissing) {
       triggeredMap[selectedPath] = true;
       (state as any).autoSuggestTriggeredByApi = triggeredMap;
       requestAnimationFrame(() => {
@@ -3157,8 +3959,11 @@ function renderApiDetail(detail: EndpointDetail) {
 
 function renderSettings() {
   const project = state.status?.project;
+  const maintainerMode = isMaintainerMode();
   const policy = project?.policy;
   const tier = String(project?.tier || 'free').toLowerCase();
+  const licenseBackend = String(project?.license_backend || (project?.license_catalog_present ? 'commercial_catalog' : 'legacy_demo'));
+  const commercialCatalog = licenseBackend === 'commercial_catalog' || Boolean(project?.license_catalog_present);
   const licenseEnforced = project?.license_enforced !== false;
   const projectLimit = policy?.max_projects == null ? 'Unlimited' : fmt(policy?.max_projects);
   const recentErrors = state.status?.recent_errors || [];
@@ -3184,16 +3989,34 @@ function renderSettings() {
     `
     : '';
 
+  const licenseCard = ui.settingsLicense.closest('.row-card') as HTMLElement | null;
+  if (licenseCard) {
+    licenseCard.style.display = maintainerMode ? '' : 'none';
+  }
+  if (!maintainerMode) {
+    ui.settingsLicense.innerHTML = '';
+    return;
+  }
+
   ui.settingsLicense.innerHTML = `
     <div class="row-card-inner">
       ${storageRecoveryHtml}
+      <div class="row-card" style="margin-bottom:12px; border:1px solid rgba(var(--brand-rgb), 0.14); background:rgba(var(--brand-rgb), 0.03);">
+        <strong>Maintainer-only controls</strong>
+        <div class="tiny" style="margin-top:6px;">
+          This panel manages customer-project licensing, plan limits, and the legacy demo compatibility path for maintainers.
+        </div>
+        <div class="tiny muted" style="margin-top:6px;">
+          Customer projects remain separate. Normal users should never see this surface.
+        </div>
+      </div>
       <div class="tiny" style="margin-bottom:12px;">
         Unique Site ID: <code class="site-id-code">${project?.site_id || 'unknown'}</code>
       </div>
       
       <div class="license-status-card tier-${tier}">
         <div class="license-status-header">
-          <strong>Current Plan: <span class="tier-label">${tier.toUpperCase()}</span></strong>
+          <strong>${commercialCatalog ? 'Commercial Entitlement' : 'Legacy Demo Compatibility'}: <span class="tier-label">${tier.toUpperCase()}</span></strong>
           <span class="status-badge ${tier === 'business' ? 'active' : 'basic'}">
             ${tier === 'business' ? 'Licensed' : 'Free Tier'}
           </span>
@@ -3212,25 +4035,25 @@ function renderSettings() {
 
         ${!licenseEnforced ? `
           <p class="tiny muted" style="margin-top:16px;">
-            License enforcement is currently disabled. You can run Jin without activation in this build.
-          </p>
-        ` : tier === 'free' ? `
-          <p class="tiny muted" style="margin-top:16px;">
-            Free tier allows 1 project per account. Activate Business for unlimited projects.
+            License enforcement is currently disabled. ${commercialCatalog ? 'A commercial catalog is available for activation.' : 'This runtime is using the legacy demo entitlement backend.'}
           </p>
         ` : `
           <p class="tiny muted" style="margin-top:16px;">
-            Business tier includes unlimited projects on your own infrastructure.
+            ${commercialCatalog
+              ? 'Commercial catalog is active. Business activation unlocks unlimited projects on your own infrastructure.'
+              : 'Legacy demo compatibility is active. Maintainers can still test the licensing flow locally.'}
           </p>
         `}
       </div>
 
       <div class="activation-form" style="margin-top:20px;">
         <label>
-          ${licenseEnforced ? 'Activate Business License' : 'Optional: Activate Business License'}
+          ${commercialCatalog
+            ? (licenseEnforced ? 'Activate Business License' : 'Optional: Activate Business License')
+            : (licenseEnforced ? 'Run Legacy Demo Activation' : 'Optional: Run Legacy Demo Activation')}
           <div class="activation-input-group">
             <input id="license-key-input" type="password" placeholder="BUS-ORG-XXXX-XXXX" />
-            <button class="action" id="activate-license-button" type="button">Activate</button>
+            <button class="action" id="activate-license-button" type="button">${commercialCatalog ? 'Activate Business License' : 'Run Legacy Demo'}</button>
           </div>
         </label>
         <div id="license-feedback" class="tiny" style="margin-top:8px;"></div>
@@ -3257,12 +4080,12 @@ function renderReports(payload: any = null) {
   ui.runReportButton.disabled = !hasTrackedEndpoints;
   ui.runReportButton.title = hasTrackedEndpoints
     ? 'Step 1: Generate report'
-    : 'No tracked APIs yet. Call your APIs first.';
+    : 'No tracked APIs yet. Connect your first endpoint before generating a report pack.';
   ui.exportReportCsv.disabled = !hasTrackedEndpoints;
   ui.exportReportCsv.textContent = hasReportData ? '2) Export CSV' : 'Generate then Export CSV';
   ui.exportReportCsv.title = hasTrackedEndpoints
     ? (hasReportData ? 'Step 2: Download the latest generated report CSV.' : 'Generate report and export in one click.')
-    : 'No tracked APIs yet. Call your APIs first.';
+    : 'No tracked APIs yet. Connect your first endpoint before generating a report pack.';
 
   const currentVal = ui.reportEndpointSelect.value;
   ui.reportEndpointSelect.innerHTML = '<option value="">All tracked APIs</option>'
@@ -3274,9 +4097,9 @@ function renderReports(payload: any = null) {
       ui.reportsContent.innerHTML = `
         <div class="empty empty-center">
           <strong>No tracked APIs yet.</strong>
-          <div class="tiny" style="margin-top:6px;">Generate one API response first, then create a report pack.</div>
+          <div class="tiny" style="margin-top:6px;">Connect your first endpoint before generating a report pack.</div>
           <div class="toolbar" style="margin-top:12px; justify-content:center;">
-            <button class="action" type="button" data-view="playbook">Open PO Guide</button>
+            <button class="action" type="button" data-view="api">Set Up APIs</button>
           </div>
         </div>
       `;
@@ -3292,7 +4115,7 @@ function renderReports(payload: any = null) {
             Export CSV now, or regenerate first if you want a fresher snapshot before sharing.
           </div>
           <div class="toolbar" style="margin-top:10px;">
-            <button class="action secondary" type="button" data-view="incidents">Open Issues</button>
+            <button class="action secondary" type="button" data-view="incidents">Review Issues</button>
           </div>
         </div>
       `
@@ -3348,20 +4171,28 @@ function renderReports(payload: any = null) {
   const anomaliesCount = Number(healthSummary.anomalies || 0);
   const unconfirmedCount = Number(healthSummary.unconfirmed || 0);
   const riskLevel = anomaliesCount >= 8 ? 'high' : ((anomaliesCount > 0 || unconfirmedCount > 0) ? 'medium' : 'low');
-  const readinessLabel = riskLevel === 'low' ? 'Ready to share' : (riskLevel === 'high' ? 'High risk' : 'Needs review');
-  const readinessPillClass = riskLevel === 'low' ? 'resolved' : (riskLevel === 'high' ? 'active' : 'acknowledged');
   const coverageRaw = Number(endpointBaseline.coverage_pct ?? 0);
   const coveragePct = Number.isFinite(coverageRaw) ? Math.max(0, Math.min(100, coverageRaw)) : 0;
   const generatedAt = payload.generated_at ? fmtDate(payload.generated_at) : fmtDate(new Date().toISOString());
+  const decision = anomaliesCount > 0
+    ? { label: 'Needs attention', tone: 'warning' as const }
+    : unconfirmedCount > 0
+      ? { label: 'Block release', tone: 'danger' as const }
+      : { label: 'Safe for now', tone: 'success' as const };
+  const decisionPillClass = decision.tone === 'success'
+    ? 'resolved'
+    : decision.tone === 'danger'
+      ? 'active'
+      : 'acknowledged';
   const recommendation = anomaliesCount > 0
-    ? 'Open Issues next and resolve high-priority changes before sharing this report.'
+    ? 'Needs attention: review Issues next and resolve high-priority changes before sharing this report.'
     : unconfirmedCount > 0
-      ? 'Open APIs next and finish setup for unconfirmed endpoints.'
-      : 'Monitoring is stable. Share this report and keep the current baseline targets.';
+      ? 'Block release: set up APIs next and finish setup for unconfirmed endpoints.'
+      : 'Safe for now: monitoring is stable. Share this report and keep the current baseline targets.';
   const recommendationAction = anomaliesCount > 0
-    ? { view: 'incidents', label: 'Open Issues' }
+    ? { view: 'incidents', label: 'Review Issues' }
     : unconfirmedCount > 0
-      ? { view: 'api', label: 'Open APIs' }
+      ? { view: 'api', label: 'Set Up APIs' }
       : { view: 'overview', label: 'Open Overview' };
   const reportSeverityLabel = (value: unknown): string => {
     const normalized = String(value || 'medium').toLowerCase();
@@ -3372,18 +4203,21 @@ function renderReports(payload: any = null) {
   };
   const topActiveIssuesCopy = activeAnomalies.length
     ? activeAnomalies.slice(0, 5).map((item: any) => `
-      <div class="reports-issue-item">
+      <div class="reports-issue-item reports-issue-item-${inferSeverityClass(item)}">
         <div class="reports-issue-main">
           <strong>${escapeHtml(String(item.endpoint_path || 'unknown endpoint'))}</strong>
           <div class="tiny" style="margin-top:4px;">
-            ${escapeHtml(String(item.kpi_field || 'metric'))} moved ${formatPercentDeltaCompact(item.pct_change)} • expected ${fmt(item.expected_value ?? item.baseline_used)} • actual ${fmt(item.actual_value)}
+            ${escapeHtml(String(item.kpi_field || 'metric'))} moved ${formatPercentDeltaCompact(item.pct_change)}
+          </div>
+          <div class="tiny muted" style="margin-top:4px;">
+            expected ${fmt(item.expected_value ?? item.baseline_used)} • actual ${fmt(item.actual_value)}
           </div>
         </div>
         <span class="status-pill ${inferSeverityClass(item)}">${escapeHtml(reportSeverityLabel(item.severity))}</span>
       </div>
     `).join('')
     : anomaliesCount > 0
-      ? '<div class="history-item">Open risks exist, but detailed rows are not loaded in this view. Open Issues to triage the full queue.</div>'
+      ? '<div class="history-item">Open risks exist, but detailed rows are not loaded in this view. Review Issues to see the full queue.</div>'
       : '<div class="history-item">No active issues right now.</div>';
 
   ui.reportsContent.dataset.reportPackReady = '1';
@@ -3400,16 +4234,20 @@ function renderReports(payload: any = null) {
 
     <div class="reports-health-banner reports-health-${riskLevel}">
       <div>
-        <strong>Project Health</strong>
+        <strong>${decision.label}</strong>
         <div class="tiny" style="margin-top:8px;">
           Status: ${fmt(healthPayload.status || 'unknown')} • APIs: ${fmt(healthSummary.total_endpoints || 0)} • Healthy: ${fmt(healthSummary.healthy || 0)} • Issues: ${fmt(anomaliesCount)}
         </div>
         <div class="tiny muted" style="margin-top:4px;">
-          ${riskLevel === 'high' ? 'Share readiness: hold until high-risk issues are triaged.' : (riskLevel === 'medium' ? 'Share readiness: review open issues and setup gaps first.' : 'Share readiness: clear to share this report snapshot.')}
+          ${decision.label === 'Block release'
+            ? 'Share readiness: hold until setup gaps are closed.'
+            : decision.label === 'Needs attention'
+              ? 'Share readiness: review Issues and setup gaps first.'
+              : 'Share readiness: clear to share this report snapshot.'}
         </div>
       </div>
       <div class="reports-health-tags">
-        <span class="status-pill ${readinessPillClass}">${readinessLabel}</span>
+        <span class="status-pill ${decisionPillClass}">${decision.label}</span>
         <span class="tiny muted">Setup pending: ${fmt(unconfirmedCount)}</span>
       </div>
     </div>
@@ -3418,7 +4256,7 @@ function renderReports(payload: any = null) {
       <div class="row-card reports-summary-card">
         <strong>Open Risks</strong>
         <span>${fmt(anomaliesCount)}</span>
-        <div class="tiny muted" style="margin-top:6px;">Active issues needing triage</div>
+        <div class="tiny muted" style="margin-top:6px;">Active issues needing review</div>
       </div>
       <div class="row-card reports-summary-card">
         <strong>Setup Pending</strong>
@@ -3447,7 +4285,7 @@ function renderReports(payload: any = null) {
         ${topActiveIssuesCopy}
       </div>
       <div class="toolbar" style="margin-top:10px;">
-        <button class="action secondary" type="button" data-view="incidents">Open Issues</button>
+        <button class="action secondary" type="button" data-view="incidents">Review Issues</button>
       </div>
     </div>
 

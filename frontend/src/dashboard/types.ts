@@ -44,6 +44,9 @@ export type StatusPayload = {
     trust_score?: number;
     is_unlicensed?: boolean;
     license_enforced?: boolean;
+    license_backend?: 'commercial_catalog' | 'legacy_demo' | string;
+    license_catalog_present?: boolean;
+    is_maintainer?: boolean;
     auth_enabled: boolean;
     auth_mode?: string;
     auth_uses_default_credentials?: boolean;
@@ -186,6 +189,26 @@ export type ProjectHealthPayload = {
 export type ProjectMonitorSnapshotPayload = {
   generated_at?: string;
   count?: number;
+  summary?: {
+    total_projects?: number;
+    active_projects?: number;
+    healthy_projects?: number;
+    degraded_projects?: number;
+    projects_with_baseline?: number;
+    projects_without_baseline?: number;
+    total_anomalies?: number;
+    total_unconfirmed?: number;
+    average_risk_score?: number;
+    top_risk_project?: {
+      id?: string;
+      name?: string;
+      status?: string;
+      risk_score?: number;
+      risk_label?: string;
+      risk_reasons?: string[];
+      coverage_pct?: number;
+    } | null;
+  };
   projects?: Array<{
     id: string;
     name: string;
@@ -193,6 +216,10 @@ export type ProjectMonitorSnapshotPayload = {
     db_path?: string;
     active?: boolean;
     status?: string;
+    risk_score?: number;
+    risk_label?: string;
+    risk_reasons?: string[];
+    trust_score?: number;
     summary?: Record<string, any>;
     baseline?: Record<string, any>;
     generated_at?: string;
@@ -255,8 +282,22 @@ export type FieldRole = {
   kind?: string | null;
   annotation?: string | null;
   suggested?: boolean;
+  time_candidate?: boolean;
+  suggested_role?: string | null;
   type?: string;
   example?: any;
+};
+
+export type ModelSetupAdvice = {
+  ready: boolean;
+  summary: string;
+  detail: string;
+  missingRoles: string[];
+  segmentCandidates: string[];
+  metricCandidates: string[];
+  timeCandidates: string[];
+  weakFields: string[];
+  candidateCount: number;
 };
 
 export type SchemaContract = {
@@ -407,9 +448,11 @@ export type KpiSnapshot = {
 export type EndpointDetail = {
   endpoint_path: string;
   http_method?: string | null;
+  response_model_present?: boolean;
   history?: any[];
   fields?: FieldRole[];
   schema_contract?: SchemaContract;
+  setup_blockers?: string[];
   recent_history?: HistoryRow[];
   current_kpis?: KpiSnapshot[];
   trend_summary?: TrendSummaryRow[];
@@ -440,6 +483,13 @@ export type NamedView = {
   currentView: DashboardView | string;
   apiFilter: string;
   apiStatusFilter: string;
+  apiBrowserMode?: 'grouped' | 'compact' | 'table';
+  apiBrowserDensity?: 'comfortable' | 'compact' | 'dense';
+  apiBrowserSort?: string;
+  apiBrowserSortDirection?: 'asc' | 'desc';
+  apiBrowserColumns?: string[];
+  apiBrowserColumnOrder?: string[];
+  apiBrowserColumnWidths?: Record<string, number>;
   errorSearch: string;
   errorStatusFilter: string;
   errorCategoryFilter: string;
@@ -458,6 +508,7 @@ export type DashboardState = {
   currentView: DashboardView | string;
   currentApiTab: ApiTab | string;
   selectedApi: string | null;
+  apiWorkspaceOpen: boolean;
   selectedIncident: IncidentRecord | null;
   status: StatusPayload | null;
   anomalies: AnomaliesPayload | null;
@@ -465,6 +516,13 @@ export type DashboardState = {
   detailCache: Map<string, EndpointDetail>;
   apiFilter: string;
   apiStatusFilter: string;
+  apiBrowserMode: 'grouped' | 'compact' | 'table';
+  apiBrowserDensity: 'comfortable' | 'compact' | 'dense';
+  apiBrowserSort: string;
+  apiBrowserSortDirection: 'asc' | 'desc';
+  apiBrowserColumns: Record<string, boolean>;
+  apiBrowserColumnOrder: string[];
+  apiBrowserColumnWidths: Record<string, number>;
   errorSearch: string;
   errorStatusFilter: string;
   errorCategoryFilter: string;
@@ -531,4 +589,8 @@ export type DashboardState = {
   apiDataState?: 'fresh' | 'stale' | 'unavailable' | 'auth_required' | 'error';
   apiDataMessage?: string | null;
   apiDataUpdatedAt?: string | null;
+  apiBrowserPage?: number;
+  apiBrowserScrollTop?: number;
+  apiBrowserVirtualWindowStart?: number;
+  apiBrowserVirtualWindowEnd?: number;
 };

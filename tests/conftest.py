@@ -35,6 +35,11 @@ def isolate_license_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("JIN_LICENSE_PROJECTS_PATH", str(tmp_path / "license-projects.json"))
 
 
+@pytest.fixture(autouse=True)
+def enable_maintainer_ui(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIN_MAINTAINER_UI", "1")
+
+
 @pytest.fixture()
 def app(tmp_path: Path) -> FastAPI:
     application = FastAPI()

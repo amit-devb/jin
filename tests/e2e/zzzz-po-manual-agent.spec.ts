@@ -188,7 +188,7 @@ async function uploadCsv(page: Page, filename: string, csvBuffer: Buffer): Promi
 
 test.setTimeout(180_000);
 
-test('PO manual agent flow: configure, upload wrong/right data, triage, report, schedule watch', async ({ page, request }) => {
+test('PO manual agent flow: configure, upload wrong/right data, review, report, schedule watch', async ({ page, request }) => {
   await ensureDashboardAccess(page);
 
   const revenueSamples = await Promise.all([

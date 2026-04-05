@@ -11,15 +11,17 @@ import duckdb
 import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from jin.logger import get_logger
 from jin.middleware import EndpointRecord, JinMiddleware
 import jin.middleware as middleware_module
 import jin.router as router_module
+from jin.dashboard import render_dashboard
 from jin.router import create_router
 from jin.scheduler import JinScheduler
 from jin.watch import watch
+from unittest.mock import patch
 
 
 class ForwardBodyModel(BaseModel):
@@ -194,11 +196,61 @@ def test_middleware_records_project_context_and_recent_errors(
     assert context["name"] == "acme-analytics"
     assert context["db_path"].endswith("project.duckdb")
     assert context["deployment_model"] == "client_infra_embedded"
+    assert context["is_maintainer"] is True
     assert context["recent_errors"]
     assert context["recent_errors"][0]["source"] == "router.status"
     assert context["recent_errors"][0]["status"] == "open"
     assert context["recent_errors"][0]["remediation_steps"]
     monkeypatch.delenv("JIN_PROJECT_NAME")
+
+
+def test_render_dashboard_embeds_maintainer_flag() -> None:
+    maintainer_html = render_dashboard(is_maintainer=True)
+    regular_html = render_dashboard(is_maintainer=False)
+    assert 'data-maintainer="1"' in maintainer_html
+    assert 'data-maintainer="0"' in regular_html
+
+
+def test_hidden_maintainer_routes_return_404_when_disabled(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    middleware = client.app.middleware_stack.app
+    monkeypatch.setattr(middleware, "_is_maintainer_ui_enabled", lambda: False)
+
+    assert client.get("/jin/api/v2/projects").status_code == 404
+    assert client.get("/jin/api/v2/projects/current").status_code == 404
+    assert client.post("/jin/api/v2/projects/register", json={"project_name": "hidden"}).status_code == 404
+    assert client.post("/jin/api/v2/projects/activate", json={"project_id": "hidden"}).status_code == 404
+    assert client.get("/jin/api/v2/po/playbook").status_code == 404
+    assert client.post("/jin/api/v2/license/activate", json={"key": "BUS-TEST-123"}).status_code == 404
+    assert client.get("/jin/api/v2/health").status_code == 200
+
+
+def test_ai_explain_route_requires_feature_gate(client, encoded_sales_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    client.get("/api/sales/amazon/YTD?value=100")
+    client.get("/api/sales/amazon/YTD?value=150")
+    anomaly_id = client.get("/jin/api/anomalies").json()["anomalies"][0]["id"]
+    middleware = client.app.middleware_stack.app
+    monkeypatch.setattr(middleware, "feature_enabled", lambda feature_name: False)
+
+    response = client.post(f"/jin/api/v2/anomaly/{anomaly_id}/ai-explain")
+    assert response.status_code == 403
+    assert "business entitlement" in response.json()["detail"]
+
+
+def test_ai_explain_route_returns_generated_explanation(client, encoded_sales_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    client.get("/api/sales/amazon/YTD?value=100")
+    client.get("/api/sales/amazon/YTD?value=150")
+    anomaly_id = client.get("/jin/api/anomalies").json()["anomalies"][0]["id"]
+    middleware = client.app.middleware_stack.app
+    monkeypatch.setattr(middleware, "feature_enabled", lambda feature_name: feature_name == "ai_chat")
+
+    response = client.post(f"/jin/api/v2/anomaly/{anomaly_id}/ai-explain")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["feature"] == "ai_chat"
+    assert payload["ai_explanation"]
+    assert payload["why_flagged"] == payload["ai_explanation"]
+    assert payload["anomaly"]["ai_explanation"] == payload["ai_explanation"]
 
 
 def test_middleware_record_error_supports_unknown_level(app, tmp_path: Path) -> None:
@@ -1314,7 +1366,12 @@ def test_po_friendly_project_alias_routes(client, encoded_sales_path: str) -> No
 
     portfolio = client.get("/jin/api/portfolio/health", headers=headers)
     assert portfolio.status_code == 200
-    assert portfolio.json()["count"] >= 1
+    portfolio_payload = portfolio.json()
+    assert portfolio_payload["count"] >= 1
+    assert "summary" in portfolio_payload
+    assert portfolio_payload["summary"]["total_projects"] >= 1
+    assert portfolio_payload["summary"]["top_risk_project"]
+    assert portfolio_payload["summary"]["average_risk_score"] >= 0
 
     summary = client.get("/jin/api/reports/summary", headers=headers)
     assert summary.status_code == 200
@@ -1413,7 +1470,12 @@ def test_v2_project_routes_cover_core_workflow(client, encoded_sales_path: str) 
 
     portfolio = client.get("/jin/api/v2/portfolio/health", headers=headers)
     assert portfolio.status_code == 200
-    assert portfolio.json()["count"] >= 1
+    portfolio_payload = portfolio.json()
+    assert portfolio_payload["count"] >= 1
+    assert "summary" in portfolio_payload
+    assert portfolio_payload["summary"]["total_projects"] >= 1
+    assert portfolio_payload["summary"]["top_risk_project"]
+    assert portfolio_payload["summary"]["average_risk_score"] >= 0
 
     summary = client.get("/jin/api/v2/reports/summary", params={"project_id": project_id}, headers=headers)
     assert summary.status_code == 200
@@ -1902,7 +1964,7 @@ def test_incident_status_routes_support_notes_snooze_and_bulk(client, encoded_sa
 
     bulk = client.post(
         "/jin/api/anomalies/bulk",
-        json={"anomaly_ids": [item["id"] for item in refreshed], "action": "acknowledged", "note": "bulk review", "owner": "triage-team"},
+        json={"anomaly_ids": [item["id"] for item in refreshed], "action": "acknowledged", "note": "bulk review", "owner": "review-team"},
     )
     assert bulk.status_code == 200
     bulk_rows = client.get("/jin/api/anomalies").json()["anomalies"]
@@ -2426,6 +2488,39 @@ def test_post_body_and_non_json_paths(client, app) -> None:
 
     middleware = next(layer for layer in app.user_middleware if layer.cls.__name__ == "JinMiddleware")
     assert middleware.kwargs["exclude_paths"] == ["/plain"]
+
+
+def test_v2_setup_requires_pydantic_response_model(client) -> None:
+    detail = client.get(f"/jin/api/endpoint/{quote('/raw', safe='')}")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload.get("response_model_present") is False
+
+    response = client.post(
+        f"/jin/api/v2/config/{quote('/raw', safe='')}",
+        json={
+            "dimension_fields": ["raw"],
+            "kpi_fields": ["raw"],
+            "time_field": None,
+            "time_profile": "auto",
+            "time_extraction_rule": "single",
+            "confirmed": True,
+        },
+    )
+    assert response.status_code == 409
+    blocked = response.json()
+    assert blocked["ok"] is False
+    assert "response model" in str(blocked.get("error", "")).lower()
+    assert any("response model" in str(item).lower() for item in (blocked.get("setup_blockers") or []))
+
+    preview = client.post(
+        f"/jin/api/v2/config-mapping/test/{quote('/raw', safe='')}",
+        json={"sample_payload": []},
+    )
+    assert preview.status_code == 409
+    preview_payload = preview.json()
+    assert preview_payload["ok"] is False
+    assert "response model" in str(preview_payload.get("error", "")).lower()
 
 
 def test_direct_rust_api_round_trip(tmp_path: Path) -> None:
@@ -4074,6 +4169,38 @@ def test_v2_setup_ignores_technical_time_fields_for_optional_endpoints(client) -
     )
     assert preview.status_code == 200
     assert preview.json().get("ok") is True
+
+
+def test_v2_setup_infers_time_candidates_from_pydantic_model(tmp_path: Path) -> None:
+    class SnapshotResponse(BaseModel):
+        snapshot_date: str = Field(examples=["2026-03-01"])
+        total: float
+
+    application = FastAPI()
+
+    @application.get("/api/snapshot", response_model=SnapshotResponse)
+    async def snapshot() -> SnapshotResponse:
+        return SnapshotResponse(snapshot_date="2026-03-01", total=42.0)
+
+    application.add_middleware(
+        JinMiddleware,
+        db_path=str(tmp_path / "snapshot.duckdb"),
+        global_threshold=10.0,
+        exclude_paths=[],
+        log_level="INFO",
+    )
+
+    with patch("jin.middleware.LicenseClient.check_usage", return_value=True):
+        with TestClient(application) as test_client:
+            response = test_client.get("/jin/api/v2/endpoint/api/snapshot")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["config"]["time_required"] is True
+    assert "snapshot_date" in payload["config"]["time_candidates"]
+    snapshot_field = next(item for item in payload["fields"] if item["name"] == "snapshot_date")
+    assert snapshot_field["time_candidate"] is True
+    assert snapshot_field["suggested_role"] == "time"
 
 
 def test_upload_preview_v2_maps_simple_template_validation_error_to_setup_feedback(

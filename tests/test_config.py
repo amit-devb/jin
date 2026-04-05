@@ -143,8 +143,25 @@ def test_classify_model_handles_enum_literal_and_datetime() -> None:
     assert dims == ["retailer", "period"]
     assert kpis == []
     assert any(field["name"] == "created_at" and field["kind"] == "exclude" for field in fields)
+    assert any(field["name"] == "created_at" and field["time_candidate"] is True for field in fields)
+    assert any(field["name"] == "created_at" and field["suggested_role"] == "time" for field in fields)
     assert any(field["name"] == "active" and field["kind"] == "ignore" for field in fields)
     assert classify_model(None) == ([], [], [], None)
+
+
+def test_classify_model_marks_time_like_examples_as_time_candidates() -> None:
+    class SnapshotResponse(BaseModel):
+        snapshot_date: str = Field(examples=["2026-03-01"])
+        total: int
+
+    fields, dims, kpis, array_path = classify_model(SnapshotResponse)
+    snapshot_field = next(item for item in fields if item["name"] == "snapshot_date")
+
+    assert "snapshot_date" in dims
+    assert kpis == ["total"]
+    assert snapshot_field["time_candidate"] is True
+    assert snapshot_field["suggested_role"] == "time"
+    assert snapshot_field["example"] == "2026-03-01"
 
 
 def test_classify_model_keeps_non_optional_unions_ignored() -> None:

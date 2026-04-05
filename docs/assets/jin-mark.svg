@@ -1,11 +1,15 @@
 <svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Jin mark">
   <defs>
-    <linearGradient id="jin-ring" x1="56" y1="44" x2="204" y2="212" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#6EE7D8"/>
+    <linearGradient id="jin-frame" x1="48" y1="36" x2="208" y2="220" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D9FDEB"/>
+      <stop offset="1" stop-color="#A7F3D0"/>
+    </linearGradient>
+    <linearGradient id="jin-accent" x1="161" y1="68" x2="161" y2="164" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14B8A6"/>
       <stop offset="1" stop-color="#0F766E"/>
     </linearGradient>
   </defs>
-  <circle cx="128" cy="128" r="88" stroke="url(#jin-ring)" stroke-width="18"/>
-  <path d="M150 68V148C150 172.301 130.301 192 106 192C86.1939 192 69.0325 180.697 60.7071 164.336L82.0902 153.643C86.4321 162.188 95.2625 168 105.5 168C117.926 168 128 157.926 128 145.5V68H150Z" fill="#0F172A"/>
-  <path d="M180 90H194V104H180V90ZM180 122H194V136H180V122ZM180 154H194V168H180V154Z" fill="#6EE7D8"/>
+  <rect x="40" y="40" width="176" height="176" rx="56" fill="#FFFFFF" stroke="url(#jin-frame)" stroke-width="8"/>
+  <path d="M150 70V129.2C150 164.025 122.951 192 89.5 192C70.2993 192 53.7413 184.118 41.875 171.5" stroke="#0F172A" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M166 86H176V150H166V86Z" fill="url(#jin-accent)"/>
 </svg>

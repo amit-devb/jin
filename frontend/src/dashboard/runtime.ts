@@ -1,5 +1,11 @@
 import {
   allIncidentRows,
+  apiBrowserVirtualWindow,
+  apiBrowserDensityMetrics,
+  apiBrowserDensityLabel,
+  normalizeApiBrowserDensity,
+  apiBrowserVisibleColumnKeys,
+  currentEndpoints,
   closeConfirm,
   closeIncidentDrawer,
   defaultNamedViewStorageKey,
@@ -10,6 +16,7 @@ import {
   incidentRows,
   namedViewsStorageKey,
   namedViewPayload,
+  isMaintainerMode,
   normalizeOperatorHandle,
   openConfirm,
   openIncidentDrawer,
@@ -19,6 +26,7 @@ import {
   renderSavedViews,
   reportSummary,
   saveNamedViews,
+  modelSetupAdvice,
   setSidebarCollapsed,
   setDensity,
   setTheme,
@@ -78,6 +86,15 @@ import {
 
 const PO_MODE_PREF_KEY = 'jin-po-mode';
 const PO_MODE_EXPLICIT_KEY = 'jin-po-mode-explicit';
+const API_BROWSER_COLUMN_DEFAULT_WIDTHS: Record<'method' | 'status' | 'setup' | 'issues', number> = {
+  method: 92,
+  status: 92,
+  setup: 112,
+  issues: 88,
+};
+const API_BROWSER_COMPACT_DEFAULT_THRESHOLD = 36;
+const API_BROWSER_DENSE_DEFAULT_THRESHOLD = 90;
+const API_BROWSER_VIRTUALIZATION_THRESHOLD = 120;
 
 function applyPoMode(nextValue: boolean, options: { explicit?: boolean; toast?: boolean } = {}): void {
   const checked = Boolean(nextValue);
@@ -154,6 +171,81 @@ function normalizeOwnerInput(value: unknown): string | undefined {
   return normalized;
 }
 
+function syncApiViewVisibility(): void {
+  const apiView = document.getElementById('view-api');
+  const showWorkspace = state.currentView === 'api' && (Boolean(state.apiWorkspaceOpen) || Boolean(state.selectedApi));
+  const hasEndpoints = (state.status?.endpoints || []).length > 0;
+  if (apiView) {
+    apiView.classList.toggle('api-browser-only', !showWorkspace && hasEndpoints);
+    apiView.classList.toggle('api-browser-detail-open', showWorkspace);
+  }
+  if (state.currentView === 'api') {
+    ui.apiWorkspace.style.display = showWorkspace ? 'grid' : 'none';
+    ui.apiEmpty.style.display = !showWorkspace && !hasEndpoints ? 'block' : 'none';
+  } else {
+    ui.apiWorkspace.style.display = showWorkspace ? 'grid' : 'none';
+    ui.apiEmpty.style.display = 'none';
+  }
+}
+
+function showApiWorkspaceNow(): void {
+  const apiView = document.getElementById('view-api');
+  if (apiView) {
+    apiView.classList.remove('api-browser-only');
+    apiView.classList.add('api-browser-detail-open');
+  }
+  ui.apiEmpty.style.display = 'none';
+  ui.apiWorkspace.style.display = 'grid';
+}
+
+function normalizeApiBrowserColumns(value: unknown): Record<string, boolean> {
+  const defaults = {
+    method: true,
+    status: true,
+    setup: true,
+    issues: true,
+  };
+  if (!value) return defaults;
+  if (Array.isArray(value)) {
+    const visible = new Set(value.map((item) => String(item)));
+    return {
+      method: visible.has('method'),
+      status: visible.has('status'),
+      setup: visible.has('setup'),
+      issues: visible.has('issues'),
+    };
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return {
+      method: record.method === undefined ? defaults.method : Boolean(record.method),
+      status: record.status === undefined ? defaults.status : Boolean(record.status),
+      setup: record.setup === undefined ? defaults.setup : Boolean(record.setup),
+      issues: record.issues === undefined ? defaults.issues : Boolean(record.issues),
+    };
+  }
+  return defaults;
+}
+
+function normalizeApiBrowserColumnOrder(value: unknown): string[] {
+  const defaults = ['method', 'status', 'setup', 'issues'];
+  if (!Array.isArray(value)) return defaults;
+  const allowed = new Set(defaults);
+  const seen = new Set<string>();
+  const order = value
+    .map((item) => String(item))
+    .filter((item) => allowed.has(item))
+    .filter((item) => {
+      if (seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+  defaults.forEach((item) => {
+    if (!seen.has(item)) order.push(item);
+  });
+  return order;
+}
+
 function saveOperatorHandle(): void {
   const input = document.getElementById('operator-handle-input') as HTMLInputElement | null;
   const nextHandle = normalizeOperatorHandle(input?.value || 'default');
@@ -163,6 +255,172 @@ function saveOperatorHandle(): void {
   loadNamedViewsForCurrentOperator();
   renderSavedViews();
   showToast(`Operator handle set to "${nextHandle}".`, 'success');
+}
+
+function browserPresetName(): string {
+  const mode = state.apiBrowserMode === 'table'
+    ? 'table index'
+    : (state.apiBrowserMode === 'compact' ? 'compact scan' : 'grouped view');
+  const density = apiBrowserDensityLabel(state.apiBrowserDensity || 'comfortable').toLowerCase();
+  const filters: string[] = [];
+  if (state.apiStatusFilter) filters.push(state.apiStatusFilter);
+  if (state.apiFilter) filters.push('filtered');
+  const visibleColumns = apiBrowserVisibleColumnKeys();
+  const columnSuffix = visibleColumns.length === 4 ? '' : `cols ${visibleColumns.join(', ')}`;
+  const order = normalizeApiBrowserColumnOrder(state.apiBrowserColumnOrder || []);
+  const orderSuffix = order.join(', ') === 'method,status,setup,issues' ? '' : `order ${order.join(', ')}`;
+  const sort = state.apiBrowserSort && state.apiBrowserSort !== 'path'
+    ? `sorted by ${state.apiBrowserSort} ${state.apiBrowserSortDirection || 'asc'}`
+    : '';
+  const densitySuffix = density === 'comfortable' ? '' : `${density} rows`;
+  return [`API ${mode}`, densitySuffix, ...filters, columnSuffix, orderSuffix, sort].filter(Boolean).join(' • ');
+}
+
+function inferApiBrowserDensity(endpointCount: number): 'comfortable' | 'compact' | 'dense' {
+  if (endpointCount > API_BROWSER_DENSE_DEFAULT_THRESHOLD) return 'dense';
+  if (endpointCount > API_BROWSER_COMPACT_DEFAULT_THRESHOLD) return 'compact';
+  return 'comfortable';
+}
+
+function normalizeApiBrowserColumnWidths(value: unknown): Record<'method' | 'status' | 'setup' | 'issues', number> {
+  const defaults = { ...API_BROWSER_COLUMN_DEFAULT_WIDTHS };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return defaults;
+  const record = value as Record<string, unknown>;
+  return {
+    method: Math.max(72, Math.min(220, Math.round(Number(record.method) || defaults.method))),
+    status: Math.max(72, Math.min(220, Math.round(Number(record.status) || defaults.status))),
+    setup: Math.max(80, Math.min(260, Math.round(Number(record.setup) || defaults.setup))),
+    issues: Math.max(72, Math.min(200, Math.round(Number(record.issues) || defaults.issues))),
+  };
+}
+
+function apiBrowserGridTemplate(): string {
+  const visibleColumns = apiBrowserVisibleColumnKeys();
+  const widths = normalizeApiBrowserColumnWidths(state.apiBrowserColumnWidths || null);
+  return ['minmax(0, 2.4fr)', ...visibleColumns.map((key) => `${widths[key as 'method' | 'status' | 'setup' | 'issues']}px`)].join(' ');
+}
+
+function syncApiBrowserGridTemplate(): void {
+  const shell = ui.apiList.querySelector('.api-browser-table-shell') as HTMLElement | null;
+  if (!shell) return;
+  shell.style.setProperty('--api-browser-grid-template', apiBrowserGridTemplate());
+}
+
+function syncApiBrowserPinnedOffsets(): void {
+  const shell = ui.apiList.querySelector('.api-browser-table-shell') as HTMLElement | null;
+  if (!shell) return;
+  const table = ui.apiList.querySelector('.api-browser-table') as HTMLElement | null;
+  const pathCell = ui.apiList.querySelector('.api-browser-head-cell.pinned-path') as HTMLElement | null;
+  const statusCell = ui.apiList.querySelector('.api-browser-head-cell.pinned-status') as HTMLElement | null;
+  const issuesCell = ui.apiList.querySelector('.api-browser-head-cell.pinned-issues') as HTMLElement | null;
+  if (!pathCell || !statusCell || !issuesCell) return;
+  const gapSource = table ? window.getComputedStyle(table) : window.getComputedStyle(pathCell);
+  const gap = Number.parseFloat(gapSource.columnGap || gapSource.gap || '8') || 8;
+  const pathWidth = Math.max(0, Math.round(pathCell.getBoundingClientRect().width + gap));
+  const statusWidth = Math.max(0, Math.round(statusCell.getBoundingClientRect().width + gap));
+  const issuesWidth = Math.max(0, Math.round(issuesCell.getBoundingClientRect().width + gap));
+  shell.style.setProperty('--api-browser-path-pinned-width', `${pathWidth}px`);
+  shell.style.setProperty('--api-browser-status-pinned-width', `${statusWidth}px`);
+  shell.style.setProperty('--api-browser-issues-pinned-width', `${issuesWidth}px`);
+}
+
+function apiBrowserRowHeight(): number {
+  return apiBrowserDensityMetrics(state.apiBrowserDensity || 'comfortable').rowHeight;
+}
+
+function moveApiBrowserColumn(column: string, direction: 'left' | 'right'): void {
+  const current = normalizeApiBrowserColumnOrder(state.apiBrowserColumnOrder || []);
+  const index = current.indexOf(column);
+  if (index < 0) return;
+  const targetIndex = direction === 'left' ? index - 1 : index + 1;
+  if (targetIndex < 0 || targetIndex >= current.length) return;
+  const next = [...current];
+  const [item] = next.splice(index, 1);
+  next.splice(targetIndex, 0, item);
+  state.apiBrowserColumnOrder = next;
+  state.apiBrowserPage = 1;
+  persistPreferences();
+  renderSidebar();
+}
+
+function reorderApiBrowserColumn(column: string, targetColumn: string, placement: 'before' | 'after'): void {
+  const current = normalizeApiBrowserColumnOrder(state.apiBrowserColumnOrder || []);
+  const sourceIndex = current.indexOf(column);
+  const targetIndex = current.indexOf(targetColumn);
+  if (sourceIndex < 0 || targetIndex < 0) return;
+  if (column === targetColumn && placement === 'before') return;
+  const next = [...current];
+  const [item] = next.splice(sourceIndex, 1);
+  let insertIndex = placement === 'before' ? targetIndex : targetIndex + 1;
+  if (sourceIndex < insertIndex) insertIndex -= 1;
+  if (insertIndex < 0) insertIndex = 0;
+  if (insertIndex > next.length) insertIndex = next.length;
+  next.splice(insertIndex, 0, item);
+  state.apiBrowserColumnOrder = next;
+  state.apiBrowserPage = 1;
+  persistPreferences();
+  renderSidebar();
+}
+
+let apiBrowserResizeState: {
+  column: 'method' | 'status' | 'setup' | 'issues';
+  startX: number;
+  startWidth: number;
+  trackingId: number;
+  source: 'pointer' | 'mouse';
+} | null = null;
+let apiBrowserScrollRaf: number | null = null;
+
+function setApiBrowserColumnWidth(column: 'method' | 'status' | 'setup' | 'issues', width: number, options: { persist?: boolean; render?: boolean } = {}): void {
+  const normalized = normalizeApiBrowserColumnWidths({
+    ...(state.apiBrowserColumnWidths || {}),
+    [column]: width,
+  });
+  state.apiBrowserColumnWidths = normalized;
+  if (options.render !== false) {
+    syncApiBrowserGridTemplate();
+  }
+  if (options.persist !== false) {
+    persistPreferences();
+    renderSidebar();
+  }
+}
+
+function resetApiBrowserScrollState(): void {
+  state.apiBrowserScrollTop = 0;
+  state.apiBrowserVirtualWindowStart = 0;
+  state.apiBrowserVirtualWindowEnd = 0;
+}
+
+function setApiBrowserDensity(density: string): void {
+  const next = normalizeApiBrowserDensity(density);
+  if (state.apiBrowserDensity === next) return;
+  state.apiBrowserDensity = next;
+  state.apiBrowserPage = 1;
+  resetApiBrowserScrollState();
+  persistPreferences();
+  renderSidebar();
+}
+
+function setApiBrowserTableScrollTop(scrollTop: number, options: { render?: boolean } = {}): void {
+  const total = currentEndpoints().length;
+  if (state.apiBrowserMode !== 'table' || total <= API_BROWSER_VIRTUALIZATION_THRESHOLD) return;
+  const nextScrollTop = Math.max(0, Math.round(Number(scrollTop) || 0));
+  state.apiBrowserScrollTop = nextScrollTop;
+  const nextWindow = apiBrowserVirtualWindow(total, nextScrollTop, { rowHeight: apiBrowserRowHeight() });
+  state.apiBrowserVirtualWindowStart = nextWindow.start;
+  state.apiBrowserVirtualWindowEnd = nextWindow.end;
+  if (options.render !== false) {
+    renderSidebar();
+  }
+}
+
+function finishApiBrowserResize(): void {
+  if (!apiBrowserResizeState) return;
+  apiBrowserResizeState = null;
+  document.body.classList.remove('api-browser-resizing');
+  persistPreferences();
+  renderSidebar();
 }
 
 function flattenSample(row: any): any {
@@ -284,8 +542,21 @@ function setupFieldValues(samples: any[], fieldName: string): any[] {
     .filter((value: any) => value !== null && value !== undefined && value !== '');
 }
 
+function isTimeCandidateField(field: any): boolean {
+  if (!field || typeof field !== 'object') return false;
+  if (field.time_candidate) return true;
+  return String(field?.suggested_role || '').toLowerCase() === 'time';
+}
+
 function inferLikelyTimeField(detail: any, samples: any[]): string | null {
-  const fields = Array.isArray(detail?.fields) ? detail.fields : [];
+  const fields = Array.isArray(detail?.fields)
+    ? detail.fields
+    : (Array.isArray(detail?.schema_contract?.fields) ? detail.schema_contract.fields : []);
+  const configCandidates = new Set<string>([
+    ...(Array.isArray(detail?.setup_config?.time_candidates) ? detail.setup_config.time_candidates : []),
+    ...(Array.isArray(detail?.config?.time_candidates) ? detail.config.time_candidates : []),
+    ...(Array.isArray(detail?.schema_contract?.time_candidates) ? detail.schema_contract.time_candidates : []),
+  ].map((item) => String(item).trim()).filter(Boolean));
   const configuredDims = new Set((detail?.setup_config?.dimension_fields || []) as string[]);
   const candidates: Array<{ name: string; score: number }> = [];
 
@@ -295,8 +566,11 @@ function inferLikelyTimeField(detail: any, samples: any[]): string | null {
     const lower = name.toLowerCase();
     const annotation = String(field?.annotation || field?.type || '').toLowerCase();
     const sampleValue = samples.length ? resolveSampleFieldValue(samples[0], name) : undefined;
+    const exampleValue = field?.example;
 
     let score = 0;
+    if (configCandidates.has(name)) score += 12;
+    if (isTimeCandidateField(field)) score += 10;
     if (annotation === 'datetime' || annotation === 'date') score += 7;
     if (
       lower.includes('snapshot')
@@ -311,7 +585,7 @@ function inferLikelyTimeField(detail: any, samples: any[]): string | null {
     ) {
       score += 4;
     }
-    if (isLikelyTimeValue(sampleValue)) score += 4;
+    if (isLikelyTimeValue(sampleValue) || isLikelyTimeValue(exampleValue)) score += 4;
     if (configuredDims.has(name)) score += 1;
 
     if (score > 0) candidates.push({ name, score });
@@ -321,6 +595,25 @@ function inferLikelyTimeField(detail: any, samples: any[]): string | null {
   candidates.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   const top = candidates[0];
   return top.score >= 5 ? top.name : null;
+}
+
+function inferModelSetupSuggestions(detail: any): {
+  dimensionFields: string[];
+  kpiFields: string[];
+  timeField: string | null;
+  candidateCount: number;
+} {
+  const fields = Array.isArray(detail?.fields)
+    ? detail.fields
+    : (Array.isArray(detail?.schema_contract?.fields) ? detail.schema_contract.fields : []);
+  const advice = modelSetupAdvice(fields);
+
+  return {
+    dimensionFields: [...advice.segmentCandidates],
+    kpiFields: [...advice.metricCandidates],
+    timeField: advice.timeCandidates[0] || null,
+    candidateCount: advice.candidateCount,
+  };
 }
 
 function autoPromoteLikelyTimeField(detail: any, samples: any[]): boolean {
@@ -343,6 +636,7 @@ function hasStrictTimeCandidate(detail: any, samples: any[]): boolean {
     if (!name) return false;
     const lower = name.toLowerCase();
     const annotation = String(field?.annotation || field?.type || '').toLowerCase();
+    if (isTimeCandidateField(field)) return true;
     if (annotation === 'datetime' || annotation === 'date') return true;
     if (
       lower.includes('time')
@@ -363,6 +657,8 @@ function setupRequiresTimeField(detail: any, setup: any): boolean {
   if (setup?.time_required === false) return false;
   const selectedTime = String(setup?.time_field || '').trim();
   if (selectedTime) return true;
+  if (Array.isArray(setup?.time_candidates) && setup.time_candidates.length > 0) return true;
+  if (Array.isArray(detail?.config?.time_candidates) && detail.config.time_candidates.length > 0) return true;
   const samples = setupSamples(detail);
   if (inferLikelyTimeField(detail, samples)) return true;
   return hasStrictTimeCandidate(detail, samples);
@@ -536,7 +832,7 @@ function policyApplyBlockers(result: any): string[] {
   });
   const messages: string[] = [];
   if (reasons.has('missing_default_params')) {
-    messages.push('Some APIs are missing default parameters. Open APIs and set watch defaults first.');
+    messages.push('Some APIs are missing default parameters. Set up APIs and add watch defaults first.');
   }
   if (reasons.has('unsupported_schedule')) {
     messages.push('Setup contains an unsupported schedule format. Use every Nh, daily HH:MM, or weekly mon[,tue] HH:MM.');
@@ -551,6 +847,13 @@ function policyApplyBlockers(result: any): string[] {
 }
 
 async function refreshProjectsCatalog(loadPolicy = true): Promise<void> {
+  if (!isMaintainerMode()) {
+    state.projectsCatalog = [];
+    state.activeProjectId = null;
+    state.projectMonitorPolicy = null;
+    state.projectPolicyLoadedFor = null;
+    return;
+  }
   const payload = await listProjects(true);
   const projects = payload.projects || [];
   state.projectsCatalog = projects;
@@ -581,6 +884,12 @@ async function refreshProjectsCatalog(loadPolicy = true): Promise<void> {
 }
 
 async function refreshProjectOperationalState(projectId: string | null, includeDigest = false): Promise<void> {
+  if (!isMaintainerMode()) {
+    state.projectHealth = null;
+    state.projectRunHistory = [];
+    if (includeDigest) state.projectDigest = null;
+    return;
+  }
   if (!projectId) {
     state.projectHealth = null;
     state.projectRunHistory = [];
@@ -599,6 +908,7 @@ async function refreshProjectOperationalState(projectId: string | null, includeD
 }
 
 async function ensurePoPlaybookLoaded(force = false): Promise<void> {
+  if (!isMaintainerMode()) return;
   if (state.poPlaybook && !force) return;
   state.poPlaybook = await fetchPoPlaybook();
 }
@@ -644,9 +954,9 @@ function buildReportCsvRows(reportPack: any): any[] {
   const digestTotals = digestPayload.totals || {};
   const endpointBaseline = endpointPayload?.baseline || {};
   const recommendation = Number(healthSummary.anomalies || 0) > 0
-    ? 'Open Issues next and resolve high-priority changes before sharing this report.'
+    ? 'Review Issues next and resolve high-priority changes before sharing this report.'
     : Number(healthSummary.unconfirmed || 0) > 0
-      ? 'Open APIs next and finish setup for unconfirmed endpoints.'
+      ? 'Set Up APIs next and finish setup for unconfirmed endpoints.'
       : 'Monitoring is stable. Share this report and keep the current baseline.';
 
   const rows: any[] = [
@@ -755,7 +1065,7 @@ function setCheckInsightFromDetail(endpointPath: string, detail: any): void {
       kind: 'error',
       actionType: 'view',
       actionValue: 'incidents',
-      actionLabel: 'Open Issues',
+      actionLabel: 'Review Issues',
     });
     return;
   }
@@ -819,12 +1129,12 @@ function setUploadInsightFromAnalysis(endpointPath: string, analysis: any, impor
   }
   if (mismatched > 0) {
     setCoreInsight(endpointPath, {
-      title: 'Insight: some segments need review',
+      title: 'Insight: some segments need attention',
       summary: `${mismatched} segment${mismatched === 1 ? '' : 's'} are outside expected targets after upload analysis.${autoIssueText}`,
       kind: 'error',
       actionType: 'view',
       actionValue: 'incidents',
-      actionLabel: 'Open Issues',
+      actionLabel: 'Review Issues',
     });
     return;
   }
@@ -1258,6 +1568,7 @@ function renderViewGuide(): void {
   const selectedHasRuns = Boolean((selectedDetail?.recent_history || []).length);
   const selectedOpenIssues = (selectedDetail?.anomaly_history || [])
     .filter((item: any) => String(item?.status || 'active') !== 'resolved').length;
+  const maintainerMode = isMaintainerMode();
   const projectTier = String(state.status?.project?.tier || 'free').toLowerCase();
   const licenseEnforced = state.status?.project?.license_enforced !== false;
   const latestStorageRecovery = (state.status?.recent_errors || []).find((item: any) => (
@@ -1267,32 +1578,43 @@ function renderViewGuide(): void {
   const storageHint = String(latestStorageRecovery?.hint || '');
   const storagePathMatch = storageHint.match(/Old DB moved to (.+?)\. Restore/i);
   const storagePath = storagePathMatch?.[1] || storageHint;
-  const storageRecoveryNote = latestStorageRecovery
+  const storageRecoveryNote = maintainerMode && latestStorageRecovery
     ? `Storage recovery: Jin reset the local DB after an internal DuckDB error.${storagePath ? ` Backup: ${storagePath}` : ''}`
     : '';
 
   if (state.currentView === 'overview') {
-    purpose = 'See overall data quality health and quickly choose where to act next.';
+    purpose = 'See overall project health and quickly choose the next setup step.';
     if (unresolvedIssues.length > 0) {
-      note = `${unresolvedIssues.length} issue${unresolvedIssues.length === 1 ? '' : 's'} still need review.`;
-      actionLabel = 'Open Issues';
+      note = `${unresolvedIssues.length} issue${unresolvedIssues.length === 1 ? '' : 's'} still need attention.`;
+      actionLabel = 'Review Issues';
       action = () => clickNavView('incidents');
     } else {
-      note = 'No active issues right now.';
-      actionLabel = 'Open APIs';
+      note = endpoints.length
+        ? 'No active issues right now.'
+        : 'Start with the onboarding checklist, then Set Up APIs to configure your first endpoint.';
+      actionLabel = 'Set Up APIs';
       action = () => clickNavView('api');
     }
   } else if (state.currentView === 'playbook') {
-    purpose = 'Use a guided PO flow: setup once, validate baselines, monitor drift, and report with confidence.';
-    note = 'Start with setup workflow, then use Checks, Issues, and Reports for day-to-day operations.';
-    actionLabel = 'Start With Register';
-    action = () => {
-      const registerInput = document.getElementById('project-register-name') as HTMLInputElement | null;
-      if (registerInput) {
-        registerInput.focus();
-        registerInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    };
+    if (maintainerMode) {
+      purpose = 'Use a guided PO flow: setup once, validate baselines, monitor drift, and report with confidence.';
+      note = 'Start with setup workflow, then use Checks, Issues, and Reports for day-to-day operations.';
+      actionLabel = 'Start With Register';
+      action = () => {
+        const registerInput = document.getElementById('project-register-name') as HTMLInputElement | null;
+        if (registerInput) {
+          registerInput.focus();
+          registerInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      };
+    } else {
+      purpose = 'Review your project health, keep an eye on drift, and move to the next action quickly.';
+      note = unresolvedIssues.length > 0
+        ? `${unresolvedIssues.length} issue${unresolvedIssues.length === 1 ? '' : 's'} still need attention.`
+        : 'No active issues right now. Set up APIs to configure endpoints or Reports to share results.';
+      actionLabel = unresolvedIssues.length > 0 ? 'Review Issues' : 'Set Up APIs';
+      action = () => clickNavView(unresolvedIssues.length > 0 ? 'incidents' : 'api');
+    }
   } else if (state.currentView === 'api') {
     purpose = 'Configure one API, set baseline targets, and run checks for that endpoint.';
     if (!state.selectedApi) {
@@ -1315,9 +1637,9 @@ function renderViewGuide(): void {
         actionLabel = 'Retry Connection';
         action = () => refreshAll(false);
       } else {
-        note = 'No APIs discovered yet.';
-        actionLabel = 'Open PO Guide';
-        action = () => clickNavView('playbook');
+        note = 'No APIs connected yet. Open Overview for the first-run checklist, then return here to finish setup.';
+        actionLabel = 'Open Overview';
+        action = () => clickNavView('overview');
       }
     } else if (!selectedConfirmed) {
       note = `${state.selectedApi} still needs setup confirmation.`;
@@ -1332,7 +1654,7 @@ function renderViewGuide(): void {
       actionLabel = 'Open Monitor';
       action = () => switchApiTab('history');
     } else if (selectedOpenIssues > 0) {
-      note = `${selectedOpenIssues} issue${selectedOpenIssues === 1 ? '' : 's'} need review for ${state.selectedApi}.`;
+      note = `${selectedOpenIssues} issue${selectedOpenIssues === 1 ? '' : 's'} need attention for ${state.selectedApi}.`;
       actionLabel = 'Review Issues';
       action = () => clickNavView('incidents');
     } else {
@@ -1348,14 +1670,14 @@ function renderViewGuide(): void {
       };
     }
   } else if (state.currentView === 'incidents') {
-    purpose = 'Triage changes and decide: expected baseline, in review, or resolved.';
+    purpose = 'Review project changes, confirm what is expected, and close out anything unresolved.';
     if (firstUnresolved) {
-      note = `${unresolvedIssues.length} unresolved issue${unresolvedIssues.length === 1 ? '' : 's'} currently open.`;
+      note = `${unresolvedIssues.length} issue${unresolvedIssues.length === 1 ? '' : 's'} need attention right now.`;
       actionLabel = 'Review Top Issue';
       action = () => openIncidentDrawer(firstUnresolved);
     } else {
       note = 'No unresolved issues right now.';
-      actionLabel = 'Open APIs';
+      actionLabel = 'Set Up APIs';
       action = () => clickNavView('api');
     }
   } else if (state.currentView === 'errors') {
@@ -1377,15 +1699,15 @@ function renderViewGuide(): void {
       action = () => confirmScheduler(jobs[0].job_id, 'run');
     } else {
       note = 'No watch jobs found yet.';
-      actionLabel = 'Open APIs';
+      actionLabel = 'Set Up APIs';
       action = () => clickNavView('api');
     }
   } else if (state.currentView === 'reports') {
     purpose = 'Generate leadership-ready report packs with health, risk, and next steps.';
     const hasReportData = Array.isArray(state.lastReportData) && state.lastReportData.length > 0;
     if (!endpoints.length) {
-      note = 'No tracked APIs yet. Call your APIs first.';
-      actionLabel = 'Open APIs';
+      note = 'No tracked APIs yet. Connect your first endpoint first.';
+      actionLabel = 'Set Up APIs';
       action = () => clickNavView('api');
     } else if (!hasReportData) {
       note = 'Pick an API only if you want a focused endpoint snapshot.';
@@ -1397,24 +1719,44 @@ function renderViewGuide(): void {
       action = () => exportReportCsv();
     }
   } else if (state.currentView === 'settings') {
-    purpose = 'Manage licensing, security defaults, and workspace preferences.';
-    if (!licenseEnforced) {
-      note = 'Licensing is optional in this build. Focus on setup, monitoring, and issue triage first.';
-      actionLabel = 'Open PO Guide';
-      actionKind = 'secondary';
-      action = () => clickNavView('playbook');
-    } else if (projectTier === 'free') {
-      note = 'Free tier supports one project; Business unlocks unlimited projects.';
-      actionLabel = 'Activate Business License';
-      action = () => {
-        const input = document.getElementById('license-key-input') as HTMLInputElement | null;
-        if (input) input.focus();
-      };
+    const licenseBackend = String(state.status?.project?.license_backend || (state.status?.project?.license_catalog_present ? 'commercial_catalog' : 'legacy_demo'));
+    const commercialCatalog = licenseBackend === 'commercial_catalog' || Boolean(state.status?.project?.license_catalog_present);
+    if (maintainerMode) {
+      purpose = commercialCatalog
+        ? 'Manage commercial licensing, security defaults, and workspace preferences.'
+        : 'Manage legacy demo licensing, security defaults, and workspace preferences.';
+      if (!licenseEnforced) {
+        note = commercialCatalog
+          ? 'Licensing is optional in this build. A commercial catalog is available for activation.'
+          : 'Licensing is optional in this build. The runtime is using the legacy demo entitlement backend.';
+        actionLabel = 'Open Playbook';
+        actionKind = 'secondary';
+        action = () => clickNavView('playbook');
+      } else if (commercialCatalog) {
+        note = projectTier === 'free'
+          ? 'Commercial catalog is active. Activate a business license to test the paid entitlement flow.'
+          : 'Commercial catalog is active. Review the licensed business settings for this project.';
+        actionLabel = projectTier === 'free' ? 'Activate Business License' : 'Review Business License';
+        action = () => {
+          const input = document.getElementById('license-key-input') as HTMLInputElement | null;
+          if (input) input.focus();
+        };
+      } else {
+        note = projectTier === 'free'
+          ? 'Legacy demo compatibility is active until a commercial catalog is configured.'
+          : 'Legacy demo compatibility is active and this project is already in business mode.';
+        actionLabel = projectTier === 'free' ? 'Run Legacy Demo Activation' : 'Review License Settings';
+        action = () => {
+          const input = document.getElementById('license-key-input') as HTMLInputElement | null;
+          if (input) input.focus();
+        };
+      }
     } else {
-      note = 'Business is active. Review workflow setup for project operations.';
-      actionLabel = 'Open PO Guide';
+      purpose = 'Manage your project and saved-view preferences.';
+      note = 'Use saved views and display preferences to keep your customer project organized.';
+      actionLabel = 'Open Overview';
       actionKind = 'secondary';
-      action = () => clickNavView('playbook');
+      action = () => clickNavView('overview');
     }
   } else {
     purpose = 'Use this workspace to keep data quality operations simple and repeatable.';
@@ -1482,7 +1824,7 @@ function syncBrowserRoute(mode: HistoryMode = 'push'): void {
   } else {
     url.searchParams.delete('y_api');
   }
-  if (state.currentView === 'api') {
+  if (state.currentView === 'api' && state.selectedApi) {
     url.searchParams.set('y_tab', String(state.currentApiTab || 'summary'));
   } else {
     url.searchParams.delete('y_tab');
@@ -1510,8 +1852,9 @@ async function applyRouteFromUrl(): Promise<void> {
   const endpointSet = new Set((state.status?.endpoints || []).map((item) => item.endpoint_path));
   if (route.api && endpointSet.has(route.api)) {
     state.selectedApi = route.api;
-  } else if (!state.selectedApi) {
-    state.selectedApi = state.status?.endpoints?.[0]?.endpoint_path || null;
+    state.apiWorkspaceOpen = true;
+  } else {
+    state.apiWorkspaceOpen = false;
   }
   state.currentView = normalizeView(route.view);
   state.currentApiTab = normalizeApiTab(route.tab);
@@ -1538,13 +1881,17 @@ async function loadDetail(path: string): Promise<any | null> {
 
 async function openApi(path: string, historyMode: HistoryMode = 'push') {
   state.selectedApi = path;
+  state.apiWorkspaceOpen = true;
   (state as any).selectedUploadAnalysisAt = null;
   state.currentView = 'api';
   state.currentApiTab = 'summary';
   state.uploadPage = 1;
   state.runPage = 1;
   syncBrowserRoute(historyMode);
+  syncApiViewVisibility();
   renderShell();
+  showApiWorkspaceNow();
+  syncApiViewVisibility();
   if (state.currentView === 'api' && state.selectedApi) {
     const detail = await loadDetail(path);
     if (!detail) return;
@@ -1553,17 +1900,49 @@ async function openApi(path: string, historyMode: HistoryMode = 'push') {
   }
 }
 
+async function openApiFromBrowser(event: Event | null, path: string): Promise<void> {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  const nextPath = String(path || '').trim();
+  if (!nextPath) return;
+  state.selectedApi = nextPath;
+  state.apiWorkspaceOpen = true;
+  state.currentView = 'api';
+  state.currentApiTab = 'summary';
+  showApiWorkspaceNow();
+  try {
+    await openApi(nextPath, 'replace');
+  } finally {
+    showApiWorkspaceNow();
+  }
+}
+
+function closeApiWorkspace(): void {
+  state.selectedApi = null;
+  state.activeApiDetail = null;
+  state.apiWorkspaceOpen = false;
+  state.currentApiTab = 'summary';
+  renderShell();
+  syncApiViewVisibility();
+  syncBrowserRoute('replace');
+}
+
 async function activateLicense() {
   const input = document.getElementById('license-key-input') as HTMLInputElement;
   const feedback = document.getElementById('license-feedback');
   const key = input?.value.trim();
+  const licenseBackend = String(state.status?.project?.license_backend || (state.status?.project?.license_catalog_present ? 'commercial_catalog' : 'legacy_demo'));
+  const commercialCatalog = licenseBackend === 'commercial_catalog' || Boolean(state.status?.project?.license_catalog_present);
+  const activationLabel = commercialCatalog ? 'business license' : 'legacy demo license';
 
   if (!key) {
-    showToast('Please enter a license key.', 'error');
+    showToast(`Please enter a ${activationLabel} key.`, 'error');
     return;
   }
 
-  showToast('Activating Business license...', 'success');
+  showToast(`Running ${activationLabel} activation...`, 'success');
   if (feedback) feedback.textContent = 'Contacting server...';
 
   try {
@@ -1576,7 +1955,7 @@ async function activateLicense() {
     const result = await response.json();
 
     if (response.ok) {
-      showToast('Business license activated successfully!', 'success');
+      showToast(`${commercialCatalog ? 'Business' : 'Legacy demo'} activation completed successfully!`, 'success');
       await refreshStatus();
       renderShell();
     } else {
@@ -1595,7 +1974,7 @@ async function activateLicense() {
 function renderShell() {
   const viewTitles = {
     overview: ['Overview', 'Start here to see project health and decide where to go next.'],
-    playbook: ['PO Guide', 'PO flow for setup, baseline targets, checks, issue triage, and report packs.'],
+    playbook: ['PO Guide', 'PO flow for setup, baseline targets, checks, issue review, and report packs.'],
     api: ['APIs', state.selectedApi ? 'Pick one API, then follow Configure -> Baselines -> Checks.' : 'Pick one API, then follow Configure -> Baselines -> Checks.'],
     incidents: ['Issues', 'See the current issues and take the next step.'],
     errors: ['Errors', 'Problems and next steps.'],
@@ -1630,7 +2009,7 @@ function renderShell() {
           <div class="toolbar" style="margin-top:8px;">
             <button class="action secondary" id="operator-handle-save" type="button" onclick="saveOperatorHandle()">Save Handle</button>
           </div>
-          <div class="tiny muted">Saved views and default triage view are scoped by this handle.</div>
+          <div class="tiny muted">Saved views and the default issue review view are scoped by this handle.</div>
         </div>
       `;
   renderViewGuide();
@@ -1644,10 +2023,7 @@ function renderShell() {
   renderSavedViews();
   renderApiSections();
   renderReports();
-  if (state.currentView !== 'api') {
-    ui.apiWorkspace.style.display = state.selectedApi ? 'grid' : 'none';
-    ui.apiEmpty.style.display = state.selectedApi ? 'none' : 'block';
-  }
+  syncApiViewVisibility();
 }
 
 async function incidentAction(id: number, action: string, snoozeMinutes = 0) {
@@ -1746,6 +2122,12 @@ async function saveConfig() {
   if (!state.selectedApi) return;
   const detail = selectedApiDetail();
   if (!detail) return;
+  if (detail.response_model_present === false) {
+    const message = 'Define a Pydantic response model first. Jin needs the model to discover fields before setup can be saved.';
+    ui.configFeedback.textContent = message;
+    showToast(message, 'error');
+    return;
+  }
   const setup = detail.setup_config || detail.config || { dimension_fields: [], kpi_fields: [] };
   const dimensionFields = Array.isArray(setup.dimension_fields) ? setup.dimension_fields : [];
   const kpiFields = Array.isArray(setup.kpi_fields) ? setup.kpi_fields : [];
@@ -2621,7 +3003,7 @@ async function runBulkAction() {
 async function runReport(options: { suppressSuccessToast?: boolean } = {}) {
   const trackedEndpoints = Array.isArray(state.status?.endpoints) ? state.status.endpoints.length : 0;
   if (trackedEndpoints === 0) {
-    const message = 'No APIs are tracked yet. Call your APIs first, then generate a report.';
+    const message = 'No APIs are tracked yet. Connect your first endpoint first, then generate a report.';
     showToast(message, 'error');
     setReportsMessage(message, 'error');
     renderReports();
@@ -2680,8 +3062,8 @@ async function runReport(options: { suppressSuccessToast?: boolean } = {}) {
 async function exportReportCsv() {
   const trackedEndpoints = Array.isArray(state.status?.endpoints) ? state.status.endpoints.length : 0;
   if (trackedEndpoints === 0) {
-    showToast('No tracked APIs yet. Call your APIs first.', 'error');
-    setReportsMessage('No tracked APIs yet. Call your APIs first.', 'error');
+    showToast('No tracked APIs yet. Connect your first endpoint first.', 'error');
+    setReportsMessage('No tracked APIs yet. Connect your first endpoint first.', 'error');
     return;
   }
   const originalLabel = ui.exportReportCsv.textContent || '2) Export CSV';
@@ -2803,9 +3185,9 @@ async function selectActiveProject() {
     await selectProject(projectId);
     state.detailCache.clear();
     state.selectedApi = null;
+    state.apiWorkspaceOpen = false;
     await refreshProjectsCatalog(true);
     await refreshAll(false);
-    state.selectedApi = state.status?.endpoints?.[0]?.endpoint_path || null;
     await refreshProjectOperationalState(projectId, false);
     renderShell();
     setProjectWorkflowMessage('Switched active project. Dashboard data now reflects the selected project.', 'success');
@@ -2909,7 +3291,7 @@ async function saveSelectedProjectPolicy() {
     return;
   }
   if (trackedEndpointCount() === 0) {
-    const message = 'No APIs are tracked yet. Call your APIs first, then save setup.';
+    const message = 'No APIs are tracked yet. Connect your first endpoint first, then save setup.';
     setProjectWorkflowMessage(message, 'error');
     showToast(message, 'error');
     return;
@@ -2952,7 +3334,7 @@ async function applySelectedProjectPolicy() {
     return;
   }
   if (trackedEndpointCount() === 0) {
-    const message = 'No APIs are tracked yet. Call your APIs first, then apply setup.';
+    const message = 'No APIs are tracked yet. Connect your first endpoint first, then apply setup.';
     setProjectWorkflowMessage(message, 'error');
     showToast(message, 'error');
     return;
@@ -2988,7 +3370,7 @@ async function runSelectedProjectBundle() {
     return;
   }
   if (trackedEndpointCount() === 0) {
-    const message = 'No APIs are tracked yet. Call your APIs first, then run checks.';
+    const message = 'No APIs are tracked yet. Connect your first endpoint first, then run checks.';
     setProjectWorkflowMessage(message, 'error');
     showToast(message, 'error');
     return;
@@ -3038,7 +3420,7 @@ async function promoteSelectedProjectBaseline() {
     return;
   }
   if (trackedEndpointCount() === 0) {
-    const message = 'No APIs are tracked yet. Call your APIs first, then refresh targets.';
+    const message = 'No APIs are tracked yet. Connect your first endpoint first, then refresh targets.';
     setProjectWorkflowMessage(message, 'error');
     showToast(message, 'error');
     return;
@@ -3100,7 +3482,7 @@ async function generateExecutiveDigest() {
     return;
   }
   if (trackedEndpointCount() === 0) {
-    const message = 'No APIs are tracked yet. Call your APIs first, then generate reports.';
+    const message = 'No APIs are tracked yet. Connect your first endpoint first, then generate reports.';
     setProjectWorkflowMessage(message, 'error');
     showToast(message, 'error');
     return;
@@ -3137,11 +3519,16 @@ function changePage(kind: string, delta: number) {
   if (kind === 'incidents') state.incidentPage = Math.max(1, state.incidentPage + delta);
   if (kind === 'uploads') state.uploadPage = Math.max(1, state.uploadPage + delta);
   if (kind === 'runs') state.runPage = Math.max(1, state.runPage + delta);
+  if (kind === 'api-browser') state.apiBrowserPage = Math.max(1, (state.apiBrowserPage || 1) + delta);
   if (kind === 'uploads' || kind === 'runs') {
     if (state.selectedApi) {
       const detail = selectedApiDetail();
       if (detail) renderApiDetail(detail);
     }
+    return;
+  }
+  if (kind === 'api-browser') {
+    renderSidebar();
     return;
   }
   renderIncidents();
@@ -3169,12 +3556,16 @@ function confirmScheduler(jobId: string, action: string) {
 }
 
 async function refreshAll(keepApi = false) {
-  const results = await Promise.allSettled([
+  const maintainerMode = isMaintainerMode();
+  const requests = [
     refreshStatus(),
     refreshAnomalies(),
     refreshScheduler(),
-    ensurePoPlaybookLoaded(false),
-  ]);
+  ];
+  if (maintainerMode) {
+    requests.push(ensurePoPlaybookLoaded(false));
+  }
+  const results = await Promise.allSettled(requests);
   const [statusResult, anomaliesResult, schedulerResult, playbookResult] = results;
 
   const statusFailed = statusResult.status === 'rejected';
@@ -3203,7 +3594,7 @@ async function refreshAll(keepApi = false) {
   if (!statusFailed && schedulerResult.status === 'rejected') {
     notifyAsyncError(schedulerResult.reason, 'Failed to refresh scheduler.');
   }
-  if (!statusFailed && state.currentView === 'playbook' && playbookResult.status === 'rejected') {
+  if (maintainerMode && !statusFailed && state.currentView === 'playbook' && playbookResult?.status === 'rejected') {
     notifyAsyncError(playbookResult.reason, 'Failed to load PO playbook.');
   }
 
@@ -3289,6 +3680,8 @@ ui.sidebarToggle.addEventListener('click', () => {
 ui.apiSearch.addEventListener('input', (event: Event) => {
   const input = event.target as HTMLInputElement | null;
   state.apiFilter = input?.value || '';
+  state.apiBrowserPage = 1;
+  resetApiBrowserScrollState();
   persistPreferences();
   renderSidebar();
 });
@@ -3296,6 +3689,8 @@ ui.apiSearch.addEventListener('input', (event: Event) => {
 ui.apiStatusFilter.addEventListener('change', (event: Event) => {
   const select = event.target as HTMLSelectElement | null;
   state.apiStatusFilter = select?.value || '';
+  state.apiBrowserPage = 1;
+  resetApiBrowserScrollState();
   persistPreferences();
   renderSidebar();
 });
@@ -3374,6 +3769,76 @@ document.addEventListener('change', (event: Event) => {
 });
 
 ui.apiList.addEventListener('click', async (event: Event) => {
+  const modeToggle = closestButton(event.target, '[data-api-browser-mode]');
+  if (modeToggle) {
+    const mode = modeToggle.dataset.apiBrowserMode === 'compact'
+      ? 'compact'
+      : (modeToggle.dataset.apiBrowserMode === 'table' ? 'table' : 'grouped');
+    state.apiBrowserMode = mode;
+    state.apiBrowserPage = 1;
+    resetApiBrowserScrollState();
+    persistPreferences();
+    renderSidebar();
+    return;
+  }
+  const densityToggle = closestButton(event.target, '[data-api-browser-density]');
+  if (densityToggle) {
+    setApiBrowserDensity(densityToggle.dataset.apiBrowserDensity || 'comfortable');
+    return;
+  }
+  const columnToggle = closestButton(event.target, '[data-api-browser-column]');
+  if (columnToggle) {
+    const key = columnToggle.dataset.apiBrowserColumn || '';
+    if (key && key !== 'path') {
+      const current = state.apiBrowserColumns?.[key] !== false;
+      state.apiBrowserColumns = {
+        ...(state.apiBrowserColumns || {}),
+        [key]: !current,
+      };
+      state.apiBrowserPage = 1;
+      resetApiBrowserScrollState();
+      persistPreferences();
+      renderSidebar();
+    }
+    return;
+  }
+  const columnMoveToggle = closestButton(event.target, '[data-api-browser-column-move]');
+  if (columnMoveToggle) {
+    const payload = columnMoveToggle.dataset.apiBrowserColumnMove || '';
+    const [column, direction] = payload.split(':');
+    if (direction === 'left' || direction === 'right') {
+      moveApiBrowserColumn(column, direction);
+    }
+    return;
+  }
+  const sortToggle = closestButton(event.target, '[data-api-sort]');
+  if (sortToggle) {
+    const key = sortToggle.dataset.apiSort || 'path';
+    if (state.apiBrowserSort === key) {
+      state.apiBrowserSortDirection = state.apiBrowserSortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+      state.apiBrowserSort = key;
+      state.apiBrowserSortDirection = key === 'issues' ? 'desc' : 'asc';
+    }
+    state.apiBrowserPage = 1;
+    resetApiBrowserScrollState();
+    persistPreferences();
+    renderSidebar();
+    return;
+  }
+  const apiToggle = closestButton(event.target, '[data-api]');
+  if (apiToggle) {
+    const path = String(apiToggle.dataset.api || '').trim();
+    if (path) {
+      state.selectedApi = path;
+      state.apiWorkspaceOpen = true;
+      state.currentView = 'api';
+      state.currentApiTab = 'summary';
+      showApiWorkspaceNow();
+      await openApi(path, 'replace');
+    }
+    return;
+  }
   const toggle = closestButton(event.target, '[data-group-toggle]');
   if (toggle) {
     const group = toggle.dataset.groupToggle;
@@ -3381,10 +3846,163 @@ ui.apiList.addEventListener('click', async (event: Event) => {
     renderSidebar();
     return;
   }
-  const button = closestButton(event.target, '[data-api]');
-  if (!button) return;
-  await openApi(button.dataset.api);
 });
+
+function handleApiBrowserTableScroll(event: Event): void {
+  if (state.apiBrowserMode !== 'table') return;
+  const target = event.target as HTMLElement | null;
+  if (!target || !target.classList.contains('api-browser-table-body')) return;
+  const scrollTop = Math.max(0, Math.round(target.scrollTop || 0));
+  const total = currentEndpoints().length;
+  if (total <= API_BROWSER_VIRTUALIZATION_THRESHOLD) return;
+  const nextWindow = apiBrowserVirtualWindow(total, scrollTop, { rowHeight: apiBrowserRowHeight() });
+  if (
+    state.apiBrowserVirtualWindowStart === nextWindow.start
+    && state.apiBrowserVirtualWindowEnd === nextWindow.end
+  ) {
+    return;
+  }
+  if (apiBrowserScrollRaf != null) {
+    cancelAnimationFrame(apiBrowserScrollRaf);
+  }
+  apiBrowserScrollRaf = requestAnimationFrame(() => {
+    apiBrowserScrollRaf = null;
+    setApiBrowserTableScrollTop(scrollTop);
+  });
+}
+
+(window as any).handleApiBrowserTableScroll = handleApiBrowserTableScroll;
+(window as any).setApiBrowserTableScrollTop = setApiBrowserTableScrollTop;
+(window as any).syncApiBrowserPinnedOffsets = syncApiBrowserPinnedOffsets;
+(window as any).openApiFromBrowser = openApiFromBrowser;
+(window as any).closeApiWorkspace = closeApiWorkspace;
+window.addEventListener('resize', () => {
+  if (state.currentView !== 'api') return;
+  syncApiBrowserPinnedOffsets();
+});
+
+ui.apiList.addEventListener('pointerdown', (event: PointerEvent) => {
+  const handle = event.target instanceof Element ? event.target.closest('[data-api-browser-column-resize]') : null;
+  if (!handle) return;
+  const column = (handle as HTMLElement).dataset.apiBrowserColumnResize as 'method' | 'status' | 'setup' | 'issues' | undefined;
+  if (!column) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const widths = normalizeApiBrowserColumnWidths(state.apiBrowserColumnWidths || null);
+  apiBrowserResizeState = {
+    column,
+    startX: event.clientX,
+    startWidth: widths[column],
+    trackingId: event.pointerId,
+    source: 'pointer',
+  };
+  document.body.classList.add('api-browser-resizing');
+  (handle as HTMLElement).setPointerCapture?.(event.pointerId);
+});
+
+ui.apiList.addEventListener('mousedown', (event: MouseEvent) => {
+  const handle = event.target instanceof Element ? event.target.closest('[data-api-browser-column-resize]') : null;
+  if (!handle || event.button !== 0) return;
+  const column = (handle as HTMLElement).dataset.apiBrowserColumnResize as 'method' | 'status' | 'setup' | 'issues' | undefined;
+  if (!column) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const widths = normalizeApiBrowserColumnWidths(state.apiBrowserColumnWidths || null);
+  apiBrowserResizeState = {
+    column,
+    startX: event.clientX,
+    startWidth: widths[column],
+    trackingId: 0,
+    source: 'mouse',
+  };
+  document.body.classList.add('api-browser-resizing');
+});
+
+window.addEventListener('pointermove', (event: PointerEvent) => {
+  if (!apiBrowserResizeState || apiBrowserResizeState.source !== 'pointer' || event.pointerId !== apiBrowserResizeState.trackingId) return;
+  const delta = event.clientX - apiBrowserResizeState.startX;
+  const nextWidth = apiBrowserResizeState.startWidth + delta;
+  setApiBrowserColumnWidth(apiBrowserResizeState.column, nextWidth, { persist: false, render: false });
+  syncApiBrowserGridTemplate();
+});
+
+window.addEventListener('pointerup', (event: PointerEvent) => {
+  if (!apiBrowserResizeState || apiBrowserResizeState.source !== 'pointer' || event.pointerId !== apiBrowserResizeState.trackingId) return;
+  finishApiBrowserResize();
+});
+
+window.addEventListener('pointercancel', (event: PointerEvent) => {
+  if (!apiBrowserResizeState || apiBrowserResizeState.source !== 'pointer' || event.pointerId !== apiBrowserResizeState.trackingId) return;
+  finishApiBrowserResize();
+});
+
+window.addEventListener('mousemove', (event: MouseEvent) => {
+  if (!apiBrowserResizeState || apiBrowserResizeState.source !== 'mouse') return;
+  const delta = event.clientX - apiBrowserResizeState.startX;
+  const nextWidth = apiBrowserResizeState.startWidth + delta;
+  setApiBrowserColumnWidth(apiBrowserResizeState.column, nextWidth, { persist: false, render: false });
+  syncApiBrowserGridTemplate();
+});
+
+window.addEventListener('mouseup', (event: MouseEvent) => {
+  if (!apiBrowserResizeState || apiBrowserResizeState.source !== 'mouse' || event.button !== 0) return;
+  finishApiBrowserResize();
+});
+
+let apiBrowserDraggedColumn: string | null = null;
+function clearApiBrowserDragState(): void {
+  apiBrowserDraggedColumn = null;
+  document.querySelectorAll('.api-browser-order-chip.dragging, .api-browser-order-chip.drop-before, .api-browser-order-chip.drop-after').forEach((node) => {
+    node.classList.remove('dragging', 'drop-before', 'drop-after');
+  });
+}
+
+ui.apiList.addEventListener('dragstart', (event: DragEvent) => {
+  const target = event.target instanceof Element ? event.target.closest('[data-api-browser-column-drag]') : null;
+  if (!target) return;
+  const column = (target as HTMLElement).dataset.apiBrowserColumnDrag || '';
+  if (!column) return;
+  apiBrowserDraggedColumn = column;
+  event.dataTransfer?.setData('text/plain', column);
+  event.dataTransfer?.setData('application/x-jin-api-browser-column', column);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  target.classList.add('dragging');
+});
+
+ui.apiList.addEventListener('dragover', (event: DragEvent) => {
+  if (!apiBrowserDraggedColumn) return;
+  const target = event.target instanceof Element ? event.target.closest('[data-api-browser-column-drop]') : null;
+  if (!target) return;
+  const column = (target as HTMLElement).dataset.apiBrowserColumnDrop || '';
+  if (!column || column === apiBrowserDraggedColumn) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  const rect = (target as HTMLElement).getBoundingClientRect();
+  const before = Number.isFinite(event.clientX) ? event.clientX <= rect.left + rect.width / 2 : true;
+  target.classList.toggle('drop-before', before);
+  target.classList.toggle('drop-after', !before);
+});
+
+ui.apiList.addEventListener('drop', (event: DragEvent) => {
+  if (!apiBrowserDraggedColumn) return;
+  const target = event.target instanceof Element ? event.target.closest('[data-api-browser-column-drop]') : null;
+  if (!target) {
+    clearApiBrowserDragState();
+    return;
+  }
+  const targetColumn = (target as HTMLElement).dataset.apiBrowserColumnDrop || '';
+  if (!targetColumn || targetColumn === 'path' || targetColumn === apiBrowserDraggedColumn) {
+    clearApiBrowserDragState();
+    return;
+  }
+  event.preventDefault();
+  const rect = (target as HTMLElement).getBoundingClientRect();
+  const before = Number.isFinite(event.clientX) ? event.clientX <= rect.left + rect.width / 2 : true;
+  reorderApiBrowserColumn(apiBrowserDraggedColumn, targetColumn, before ? 'before' : 'after');
+  clearApiBrowserDragState();
+});
+
+ui.apiList.addEventListener('dragend', clearApiBrowserDragState);
 
 ui.logoutButton.addEventListener('click', (event: Event) => {
   event.preventDefault();
@@ -3782,6 +4400,16 @@ ui.saveNamedView.addEventListener('click', () => {
   ui.namedViewInput.value = '';
   showToast(`Saved view "${name}".`, 'success');
 });
+
+function saveBrowserView(): void {
+  const name = browserPresetName();
+  const view = namedViewPayload();
+  view.name = name;
+  state.savedViews = [view, ...(state.savedViews || []).filter((item) => item.name !== name)].slice(0, 12);
+  saveNamedViews();
+  renderSavedViews();
+  showToast(`Saved browser view "${name}".`, 'success');
+}
 ui.exportNamedViews.addEventListener('click', () => {
   downloadJson('jin-named-views.json', {
     generated_at: new Date().toISOString(),
@@ -3840,12 +4468,24 @@ window.confirmError = function confirmError(id: number, action: string) {
 window.changePage = changePage;
 window.saveIncidentNotes = saveIncidentNotes;
 window.saveOperatorHandle = saveOperatorHandle;
+window.saveBrowserView = saveBrowserView;
+(window as any).moveApiBrowserColumn = moveApiBrowserColumn;
+window.setApiBrowserColumnWidth = setApiBrowserColumnWidth;
 window.applyResolutionPreset = applyResolutionPreset;
 window.applyNamedView = async function applyNamedView(id: number) {
   const view = (state.savedViews || []).find((entry) => Number(entry.id) === Number(id));
   if (!view) return;
   state.apiFilter = view.apiFilter || '';
   state.apiStatusFilter = view.apiStatusFilter || '';
+  state.apiBrowserMode = view.apiBrowserMode || state.apiBrowserMode || 'grouped';
+  state.apiBrowserDensity = normalizeApiBrowserDensity(view.apiBrowserDensity || state.apiBrowserDensity || 'comfortable');
+  state.apiBrowserSort = view.apiBrowserSort || state.apiBrowserSort || 'path';
+  state.apiBrowserSortDirection = view.apiBrowserSortDirection || state.apiBrowserSortDirection || 'asc';
+  state.apiBrowserColumns = normalizeApiBrowserColumns(view.apiBrowserColumns);
+  state.apiBrowserColumnOrder = normalizeApiBrowserColumnOrder(view.apiBrowserColumnOrder);
+  state.apiBrowserColumnWidths = normalizeApiBrowserColumnWidths(view.apiBrowserColumnWidths);
+  state.apiBrowserPage = 1;
+  resetApiBrowserScrollState();
   state.errorSearch = view.errorSearch || '';
   state.errorStatusFilter = view.errorStatusFilter || '';
   state.errorCategoryFilter = view.errorCategoryFilter || '';
@@ -4020,6 +4660,9 @@ function blockInPoMode(message: string): boolean {
     
     // 1. Source Detection & Flattening
     const samples = setupSamples(detail);
+    const fields = Array.isArray(detail.fields) ? detail.fields : [];
+    const selectedTimeField = String(detail.setup_config.time_field || '').trim();
+    const selectedField = fields.find((field: any) => String(field?.name || field || '').trim() === selectedTimeField) || null;
     state.timePreview = null;
     state.grainReason = null;
     
@@ -4051,8 +4694,11 @@ function blockInPoMode(message: string): boolean {
     const isPinned = detail.setup_config.time_pin || false;
 
     if (!samples.length) {
-      state.timePreview = 'No recent sample yet. Time preview appears after the next check.';
-      state.grainReason = 'Setup is not blocked. Pick your time field now, then run one check to confirm cadence.';
+      const modelExample = selectedField?.example;
+      state.timePreview = modelExample
+        ? `Model-selected time field "${name}": ${displayDateFromValue(modelExample) || String(modelExample)}`
+        : `Model-selected time field: ${name}`;
+      state.grainReason = 'Pydantic response model selected this clock before traffic arrives.';
       state.detectedGrain = detail.setup_config.time_granularity || state.detectedGrain || 'day';
       renderFieldRoles(detail.fields, detail.setup_config, detail.metrics);
       return;
@@ -4061,8 +4707,16 @@ function blockInPoMode(message: string): boolean {
     const latestRow = samples[0];
     const rawVal = resolveSampleFieldValue(latestRow, name);
     if (rawVal === undefined || rawVal === null || rawVal === '') {
-      state.timePreview = `No sample value found for "${name}"`;
-      state.grainReason = 'Pick a different time field or run checks with a payload that includes this field.';
+      const modelExample = selectedField?.example;
+      if (modelExample !== undefined && modelExample !== null && modelExample !== '') {
+        state.timePreview = `Model-selected example for "${name}": ${displayDateFromValue(modelExample) || String(modelExample)}`;
+        state.grainReason = 'Pydantic response model selected this clock before traffic arrives.';
+        state.detectedGrain = detail.setup_config.time_granularity || state.detectedGrain || 'day';
+        renderFieldRoles(detail.fields, detail.setup_config, detail.metrics);
+        return;
+      }
+      state.timePreview = `Model-selected time field: ${name}`;
+      state.grainReason = 'Pydantic response model selected this clock before traffic arrives.';
       state.detectedGrain = detail.setup_config.time_granularity || state.detectedGrain || 'day';
       renderFieldRoles(detail.fields, detail.setup_config, detail.metrics);
       return;
@@ -4168,6 +4822,20 @@ function blockInPoMode(message: string): boolean {
     if (!detail || !detail.fields || !detail.setup_config) return;
     const endpointPath = String(detail.endpoint_path || state.selectedApi || '').trim();
     if (!endpointPath) return;
+    if (detail.response_model_present === false) {
+        const message = 'Define a Pydantic response model first. Jin needs the model to discover fields and time candidates before setup can be saved.';
+        setAutoSuggestSummary(endpointPath, {
+            headline: 'Pydantic response model required.',
+            details: message,
+        hasSuggestions: false,
+      });
+      showToast(message, 'error');
+      return;
+    }
+
+    const modelSuggestions = inferModelSetupSuggestions(detail);
+    const modelAdvice = modelSetupAdvice(detail.fields || detail.schema_contract?.fields || []);
+    const modelReady = modelAdvice.ready;
 
     // Only run if nothing is configured yet (or forced)
     const hasConfig = (detail.setup_config.dimension_fields?.length || 0) > 0 || 
@@ -4185,88 +4853,107 @@ function blockInPoMode(message: string): boolean {
     }
 
     const samples = setupSamples(detail);
-    if (!samples.length) {
-        setAutoSuggestSummary(endpointPath, {
-            headline: 'No recent sample data yet.',
-            details: 'Call this API once, then run auto-suggest to pre-fill segments and metrics.',
-            hasSuggestions: false,
-        });
-        renderFieldRoles(detail.fields, detail.setup_config, detail.metrics);
-        showToast('Auto-suggest needs at least one recent API response.', 'info');
-        return;
-    }
-    
+    const useModelFirst = modelAdvice.candidateCount > 0;
+
     const suggestedDims: string[] = [];
     const suggestedKpis: string[] = [];
-    let suggestedTime: string | null = null;
+    let suggestedTime: string | null = modelSuggestions.timeField || null;
 
-    detail.fields.forEach(f => {
-        const name = f.name;
-        const lowerName = name.toLowerCase();
+    if (useModelFirst) {
+      modelSuggestions.dimensionFields.forEach((name) => suggestedDims.push(name));
+      modelSuggestions.kpiFields.forEach((name) => suggestedKpis.push(name));
+    }
 
-        // Collect all non-null values for this field
-        const values = setupFieldValues(samples, name);
-        if (values.length === 0) return;
-
-        // 1. Guess Time
-        if (!suggestedTime) {
-            if (lowerName.includes('date') || lowerName.includes('time') || lowerName.includes('period') || lowerName.includes('at')) {
-                suggestedTime = name;
-                return;
-            }
-            // Check if ALL values look like timestamps/dates
-            const allLookLikeDates = values.every(v => {
-                const sVal = String(v);
-                return sVal.match(/^\d{4}-\d{2}-\d{2}/) || sVal.match(/^\d{10,13}$/);
+    if (!useModelFirst) {
+        if (!samples.length) {
+            setAutoSuggestSummary(endpointPath, {
+                headline: 'Model needs clearer fields.',
+                details: modelAdvice.detail || 'Jin found the response model, but it does not expose clear Segment, Metric, or Time candidates yet. Add typed fields or examples so setup can be pre-filled.',
+                hasSuggestions: false,
             });
-            if (allLookLikeDates && values.length > 0) {
-                suggestedTime = name;
-                return;
-            }
+            renderFieldRoles(detail.fields, detail.setup_config, detail.metrics);
+            showToast('Add clearer typed fields or examples to make auto-suggest work from the API model.', 'info');
+            return;
         }
 
-        // 2. Guess Watch Num (KPIs) - check for numbers with Variance
-        const numericValues = values.filter(v => typeof v === 'number' || (!isNaN(parseFloat(v)) && isFinite(v as number)));
-        if (numericValues.length === values.length && values.length > 0) {
-            // It's predominantly numeric
-            const nums = numericValues.map(v => typeof v === 'number' ? v : parseFloat(v));
-            const min = Math.min(...nums);
-            const max = Math.max(...nums);
-            
-            // If it fluctuates, it's a KPI. If it's pure constant, maybe an ID.
-            if (max > min) {
-                suggestedKpis.push(name);
-                return;
-            } else {
-                // It's a constant number. Let's see if the name hints at a KPI anyway.
-                const kpiKeywords = ['amount', 'value', 'total', 'count', 'sum', 'price', 'quantity', 'qty', 'rsv', 'sales'];
-                if (kpiKeywords.some(kw => lowerName.includes(kw))) {
-                    suggestedKpis.push(name);
+        detail.fields.forEach(f => {
+            const name = f.name;
+            const lowerName = name.toLowerCase();
+            const fieldAnnotation = String(f?.annotation || f?.type || '').toLowerCase();
+
+            // Collect all non-null values for this field
+            const values = setupFieldValues(samples, name);
+
+            // 1. Guess Time
+            if (!suggestedTime) {
+                if (isTimeCandidateField(f) || fieldAnnotation === 'datetime' || fieldAnnotation === 'date') {
+                    suggestedTime = name;
+                    return;
+                }
+                if (lowerName.includes('date') || lowerName.includes('time') || lowerName.includes('period') || lowerName.includes('at')) {
+                    suggestedTime = name;
+                    return;
+                }
+                if (values.length === 0 && isLikelyTimeValue(f?.example)) {
+                    suggestedTime = name;
+                    return;
+                }
+                // Check if ALL values look like timestamps/dates
+                const allLookLikeDates = values.length > 0 && values.every(v => {
+                    const sVal = String(v);
+                    return sVal.match(/^\d{4}-\d{2}-\d{2}/) || sVal.match(/^\d{10,13}$/);
+                });
+                if (allLookLikeDates && values.length > 0) {
+                    suggestedTime = name;
                     return;
                 }
             }
-        }
 
-        // 3. Guess Groups (Dimensions) - check Cardinality
-        const stringValues = values.filter(v => typeof v === 'string');
-        if (stringValues.length > 0) {
-            const uniqueCount = new Set(stringValues).size;
-            const cardinalityRatio = uniqueCount / stringValues.length;
-            
-            // If cardinality is relatively low (e.g., less than 80% unique, or very few unique items)
-            if (cardinalityRatio < 0.8 || uniqueCount <= 10) {
-                suggestedDims.push(name);
-                return;
+            if (values.length === 0) return;
+
+            // 2. Guess Watch Num (KPIs) - check for numbers with Variance
+            const numericValues = values.filter(v => typeof v === 'number' || (!isNaN(parseFloat(v)) && isFinite(v as number)));
+            if (numericValues.length === values.length && values.length > 0) {
+                // It's predominantly numeric
+                const nums = numericValues.map(v => typeof v === 'number' ? v : parseFloat(v));
+                const min = Math.min(...nums);
+                const max = Math.max(...nums);
+                
+                // If it fluctuates, it's a KPI. If it's pure constant, maybe an ID.
+                if (max > min) {
+                    suggestedKpis.push(name);
+                    return;
+                } else {
+                    // It's a constant number. Let's see if the name hints at a KPI anyway.
+                    const kpiKeywords = ['amount', 'value', 'total', 'count', 'sum', 'price', 'quantity', 'qty', 'rsv', 'sales'];
+                    if (kpiKeywords.some(kw => lowerName.includes(kw))) {
+                        suggestedKpis.push(name);
+                        return;
+                    }
+                }
             }
-            
-            // Fallback to name heuristic if cardinality is high but it sounds like a dimension
-            const dimKeywords = ['id', 'name', 'type', 'category', 'region', 'country', 'brand', 'retailer', 'store', 'channel'];
-            if (dimKeywords.some(kw => lowerName.includes(kw))) {
-                suggestedDims.push(name);
-                return;
+
+            // 3. Guess Groups (Dimensions) - check Cardinality
+            const stringValues = values.filter(v => typeof v === 'string');
+            if (stringValues.length > 0) {
+                const uniqueCount = new Set(stringValues).size;
+                const cardinalityRatio = uniqueCount / stringValues.length;
+                
+                // If cardinality is relatively low (e.g., less than 80% unique, or very few unique items)
+                if (cardinalityRatio < 0.8 || uniqueCount <= 10) {
+                    suggestedDims.push(name);
+                    return;
+                }
+                
+                // Fallback to name heuristic if cardinality is high but it sounds like a dimension
+                const dimKeywords = ['id', 'name', 'type', 'category', 'region', 'country', 'brand', 'retailer', 'store', 'channel'];
+                if (dimKeywords.some(kw => lowerName.includes(kw))) {
+                    suggestedDims.push(name);
+                    return;
+                }
             }
-        }
-    });
+        });
+    }
 
     const existingDims = new Set((detail.setup_config.dimension_fields || []) as string[]);
     const existingKpis = new Set((detail.setup_config.kpi_fields || []) as string[]);
@@ -4277,20 +4964,33 @@ function blockInPoMode(message: string): boolean {
     detail.setup_config.kpi_fields = [...existingKpis];
 
     (window as any).refreshTimePreview();
-    (window as any).scrubNoise(); // V8: Filter out UUID/System junk
+    if (!useModelFirst) {
+      (window as any).scrubNoise(); // V8: Filter out UUID/System junk
+    }
 
     const finalDims = detail.setup_config.dimension_fields || [];
     const finalKpis = detail.setup_config.kpi_fields || [];
     const dimText = finalDims.length ? finalDims.slice(0, 3).join(', ') : 'none';
     const kpiText = finalKpis.length ? finalKpis.slice(0, 3).join(', ') : 'none';
     const timeText = detail.setup_config.time_field ? String(detail.setup_config.time_field) : 'not selected';
+    const headline = modelReady
+      ? 'Suggested setup is ready from the Pydantic response model.'
+      : 'Suggested setup is partially ready from the Pydantic model.';
+    const details = modelReady
+      ? `Segments: ${dimText}. Metrics: ${kpiText}. ${detail.setup_config.time_field ? `Time field: ${timeText}.` : 'Choose a Time field from the model if this API is time-based.'}`
+      : `${modelAdvice.summary} ${modelAdvice.detail} Segments: ${dimText}. Metrics: ${kpiText}. ${detail.setup_config.time_field ? `Time field: ${timeText}.` : 'Time field not selected yet.'}`.trim();
     setAutoSuggestSummary(endpointPath, {
-        headline: 'Suggested setup is ready.',
-        details: `Segments: ${dimText}. Metrics: ${kpiText}. Time field: ${timeText}.`,
+        headline,
+        details,
         hasSuggestions: finalDims.length > 0 || finalKpis.length > 0 || Boolean(detail.setup_config.time_field),
     });
     renderFieldRoles(detail.fields, detail.setup_config, detail.metrics);
-    showToast('Auto-suggest updated segment and metric choices from recent data.', 'success');
+    showToast(
+      useModelFirst
+        ? 'Auto-suggest filled setup from the API model.'
+        : 'Auto-suggest updated segment and metric choices from recent data.',
+      'success',
+    );
 };
 
 /**
@@ -4493,6 +5193,77 @@ async function quickFixBaseline(id: number) {
 }
 (window as any).quickFixBaseline = quickFixBaseline;
 
+async function investigateWithAi() {
+    const current = state.selectedIncident;
+    if (!current || !Number.isFinite(Number(current.id))) {
+        showToast('Open an issue first.', 'error');
+        return;
+    }
+    const anomalyId = Number(current.id);
+    showToast('Generating an explanation...', 'success');
+    try {
+        const response = await fetch(`/jin/api/v2/anomaly/${anomalyId}/ai-explain`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        const result = await response.json();
+        if (response.ok) {
+            const anomaly = result?.anomaly || {};
+            const explanation = String(result?.ai_explanation || anomaly?.ai_explanation || anomaly?.why_flagged || 'No explanation available.');
+            const updated = {
+                ...current,
+                ...anomaly,
+                ai_explanation: explanation,
+                why_flagged: String(result?.why_flagged || explanation),
+            };
+            openIncidentDrawer(updated);
+            showToast('AI explanation added to the alert.', 'success');
+            setIncidentsMessage('AI explanation generated for this issue.', 'success');
+        } else {
+            const message = String(result?.detail || result?.message || 'AI explanation failed.');
+            showToast(message, 'error');
+            setIncidentsMessage(message, 'error');
+        }
+    } catch (error) {
+        showToast('Network error generating the explanation.', 'error');
+        setIncidentsMessage('Could not reach the AI explanation endpoint.', 'error');
+    }
+}
+(window as any).investigateWithAi = investigateWithAi;
+
+async function focusPortfolioProject(projectId: string) {
+    const targetProjectId = String(projectId || '').trim();
+    if (!targetProjectId) {
+        showToast('Project could not be focused.', 'error');
+        return;
+    }
+    const currentProjectId = String(state.activeProjectId || '').trim();
+    if (currentProjectId === targetProjectId) {
+        setProjectWorkflowMessage('That project is already active.', 'info');
+        showToast('Project is already active.', 'success');
+        return;
+    }
+    try {
+        await selectProject(targetProjectId);
+        state.activeProjectId = targetProjectId;
+        state.detailCache.clear();
+        state.selectedApi = null;
+        state.apiWorkspaceOpen = false;
+        await refreshProjectsCatalog(true);
+        await refreshAll(false);
+        const activeProject = selectedProjectId();
+        await refreshProjectOperationalState(activeProject, false);
+        renderShell();
+        setProjectWorkflowMessage('Focused the selected portfolio project.', 'success');
+        showToast('Portfolio project focused.', 'success');
+    } catch (error) {
+        showToast('Could not focus that project.', 'error');
+        setProjectWorkflowMessage('Could not switch to the selected project.', 'error');
+    }
+}
+(window as any).focusPortfolioProject = focusPortfolioProject;
+
 function switchApiTab(tab: string, historyMode: HistoryMode = 'push') {
     const normalizedTab = normalizeApiTab(tab);
     const movedToApiView = state.currentView !== 'api';
@@ -4582,8 +5353,44 @@ async function init() {
   setDensity(localStorage.getItem('jin-density') || 'comfortable');
   const savedSidebar = localStorage.getItem('jin-sidebar');
   setSidebarCollapsed(savedSidebar ? savedSidebar === 'collapsed' : window.innerWidth < 1180);
+  const storedBrowserMode = localStorage.getItem('jin-api-browser-mode');
   state.apiFilter = localStorage.getItem('jin-api-filter') || '';
   state.apiStatusFilter = localStorage.getItem('jin-api-status-filter') || '';
+  state.apiBrowserMode = storedBrowserMode === 'table'
+    ? 'table'
+    : (storedBrowserMode === 'compact' ? 'compact' : 'grouped');
+  state.apiBrowserDensity = normalizeApiBrowserDensity(localStorage.getItem('jin-api-browser-density') || 'comfortable');
+  state.apiBrowserSort = localStorage.getItem('jin-api-browser-sort') || 'path';
+  state.apiBrowserSortDirection = (localStorage.getItem('jin-api-browser-sort-direction') === 'desc') ? 'desc' : 'asc';
+  state.apiBrowserColumns = normalizeApiBrowserColumns((() => {
+    const raw = localStorage.getItem('jin-api-browser-columns');
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (_error) {
+      return null;
+    }
+  })());
+  state.apiBrowserColumnOrder = normalizeApiBrowserColumnOrder((() => {
+    const raw = localStorage.getItem('jin-api-browser-column-order');
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (_error) {
+      return null;
+    }
+  })());
+  state.apiBrowserColumnWidths = normalizeApiBrowserColumnWidths((() => {
+    const raw = localStorage.getItem('jin-api-browser-column-widths');
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (_error) {
+      return null;
+    }
+  })());
+  state.apiBrowserPage = 1;
+  resetApiBrowserScrollState();
   state.errorSearch = localStorage.getItem('jin-error-search') || '';
   state.errorStatusFilter = localStorage.getItem('jin-error-status-filter') || '';
   state.errorCategoryFilter = localStorage.getItem('jin-error-category-filter') || '';
@@ -4610,20 +5417,26 @@ async function init() {
     state.apiDataMessage = 'Showing the last known API snapshot while reconnecting...';
   }
   await refreshAll(false);
-  try {
-    await refreshProjectsCatalog(true);
-    await refreshProjectOperationalState(selectedProjectId(), false);
-    state.projectsMonitorSnapshot = await monitorProjects();
-  } catch (error) {
-    notifyAsyncError(error, 'Project workflow panel could not be initialized.');
+  if (!storedBrowserMode) {
+    state.apiBrowserMode = 'table';
+    persistPreferences();
+  }
+  if (!localStorage.getItem('jin-api-browser-density')) {
+    const endpointCount = state.status?.endpoints?.length || 0;
+    state.apiBrowserDensity = inferApiBrowserDensity(endpointCount);
+    persistPreferences();
+  }
+  if (isMaintainerMode()) {
+    try {
+      await refreshProjectsCatalog(true);
+      await refreshProjectOperationalState(selectedProjectId(), false);
+      state.projectsMonitorSnapshot = await monitorProjects();
+    } catch (error) {
+      notifyAsyncError(error, 'Project workflow panel could not be initialized.');
+    }
   }
   const routeParams = new URLSearchParams(window.location.search);
   const hasRouteState = routeParams.has('y_view') || routeParams.has('y_api') || routeParams.has('y_tab');
-  const first = state.status?.endpoints?.[0]?.endpoint_path;
-  if (first && !state.selectedApi) {
-    state.selectedApi = first;
-    renderSidebar();
-  }
   const defaultNamedViewId = readDefaultNamedViewId();
   const defaultNamedView = (state.savedViews || []).find((item) => Number(item.id) === defaultNamedViewId);
   if (defaultNamedView && !hasRouteState) {

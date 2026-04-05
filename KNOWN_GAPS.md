@@ -34,7 +34,7 @@ This file tracks active product and quality risks for MVP.
 - Status: Resolved
 - Area: Issue Sync
 - Problem: Upload mismatch to Issues sync previously felt inconsistent.
-- User Impact: Previously reduced trust in triage flow.
+- User Impact: Previously reduced trust in issue review flow.
 - Owner: Engineering
 - Next Action: Maintain update-in-place dedupe logic and refresh/navigation E2E assertions.
 
@@ -43,6 +43,6 @@ This file tracks active product and quality risks for MVP.
 - Status: Resolved
 - Area: Incident UX
 - Problem: Issue filters and PO mode lock state could feel opaque, leading to false "no issues" or "unclickable controls" moments.
-- User Impact: Previously reduced confidence in triage and setup flow.
+- User Impact: Previously reduced confidence in issue review and setup flow.
 - Owner: Product + Frontend
 - Next Action: Keep clear-filter empty-state guidance, upload-to-issues reset behavior, and PO lock messaging covered by E2E tests.

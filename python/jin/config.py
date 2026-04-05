@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import types
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -181,6 +182,56 @@ def _field_declared_example(field: Any) -> Any | None:
     return None
 
 
+def _looks_like_time_example(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (datetime, date)):
+        return True
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number >= 1000000000
+    text = str(value).strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if lower in {"ytd", "mtd", "qtd", "wtd"}:
+        return True
+    if len(text) >= 4 and text[:4].isdigit():
+        if len(text) >= 10 and text[4] in {"-", "/"} and text[7] in {"-", "/"}:
+            return True
+        if len(text) == 7 and text[4] == "-" and text[5:7].isdigit():
+            return True
+    if len(text) in {10, 13} and text.isdigit():
+        return True
+    if "t" in lower and ":" in lower and "-" in lower:
+        return True
+    if "week" in lower or re.match(r"^\d{4}-w\d{1,2}$", lower):
+        return True
+    if re.match(r"^\d{4}(q[1-4]|-q[1-4])$", lower):
+        return True
+    return False
+
+
+def _looks_like_time_name(name: str) -> bool:
+    lower = name.lower()
+    return any(
+        token in lower
+        for token in (
+            "time",
+            "date",
+            "timestamp",
+            "created_at",
+            "updated_at",
+            "snapshot",
+            "period",
+            "week",
+            "month",
+            "year",
+            "day",
+        )
+    )
+
+
 def classify_model(
     model: type[BaseModel] | None,
     prefix: str = "",
@@ -225,6 +276,7 @@ def classify_model(
         kpi_keywords = {"amount", "price", "revenue", "value", "total", "rate", "percentage", "score", "in_stock", "units", "count", "quantity", "cost"}
 
         kind = "ignore"
+        time_candidate = False
         if annotation in (str,):
             kind = "dimension"
             # If name sounds like a KPI (e.g. amount_str), we still default to dimension but record why
@@ -245,19 +297,25 @@ def classify_model(
                 kpis.append(field_path)
         elif annotation in (datetime, date):
             kind = "exclude"
+            time_candidate = True
         elif annotation is bool:
             kind = "ignore"
 
         example_value = example_map.get(field_path)
         if example_value is None:
             example_value = _field_declared_example(field)
+        if not time_candidate:
+            time_candidate = annotation in (datetime, date) or _looks_like_time_example(example_value) or _looks_like_time_name(clean_name)
 
         field_payload: dict[str, Any] = {
             "name": field_path, 
             "kind": kind, 
             "annotation": _annotation_name(annotation),
-            "suggested": kind != "ignore"
+            "suggested": kind != "ignore",
+            "time_candidate": time_candidate,
         }
+        if time_candidate:
+            field_payload["suggested_role"] = "time"
         if example_value is not None:
             field_payload["example"] = example_value
         fields.append(field_payload)

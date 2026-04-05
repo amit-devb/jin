@@ -36,7 +36,7 @@ function buildMismatchCsv(): Buffer {
   return Buffer.from(`${rows.join('\n')}\n`, 'utf-8');
 }
 
-test('MVP acceptance: configure, upload mismatch, triage issue, resolve', async ({ page }) => {
+test('MVP acceptance: configure, upload mismatch, review issue, resolve', async ({ page }) => {
   await page.goto(`/jin?y_view=api&y_api=${REVENUE_API_ENCODED}&y_tab=configuration`);
   await expect(page.locator('#api-title')).toContainText(REVENUE_API);
   await expect(page.locator('#po-mode-toggle')).not.toBeChecked();

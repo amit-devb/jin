@@ -1,10 +1,20 @@
 import { ui } from './dom';
-import type { DashboardState } from './types';
+import type { DashboardState, FieldRole, ModelSetupAdvice } from './types';
+
+const API_BROWSER_OPTIONAL_COLUMNS = ['method', 'status', 'setup', 'issues'] as const;
+const API_BROWSER_DENSITIES = ['comfortable', 'compact', 'dense'] as const;
+const API_BROWSER_COLUMN_DEFAULT_WIDTHS: Record<typeof API_BROWSER_OPTIONAL_COLUMNS[number], number> = {
+  method: 92,
+  status: 92,
+  setup: 112,
+  issues: 88,
+};
 
 const state: DashboardState = {
       currentView: 'overview',
       currentApiTab: 'summary',
       selectedApi: null,
+      apiWorkspaceOpen: false,
       selectedIncident: null,
       status: null,
       anomalies: null,
@@ -12,6 +22,27 @@ const state: DashboardState = {
       detailCache: new Map(),
       apiFilter: '',
       apiStatusFilter: '',
+      apiBrowserMode: 'grouped',
+      apiBrowserDensity: 'comfortable',
+      apiBrowserSort: 'path',
+      apiBrowserSortDirection: 'asc',
+      apiBrowserColumns: {
+        method: true,
+        status: true,
+        setup: true,
+        issues: true,
+      },
+      apiBrowserColumnOrder: ['method', 'status', 'setup', 'issues'],
+      apiBrowserColumnWidths: {
+        method: API_BROWSER_COLUMN_DEFAULT_WIDTHS.method,
+        status: API_BROWSER_COLUMN_DEFAULT_WIDTHS.status,
+        setup: API_BROWSER_COLUMN_DEFAULT_WIDTHS.setup,
+        issues: API_BROWSER_COLUMN_DEFAULT_WIDTHS.issues,
+      },
+      apiBrowserPage: 1,
+      apiBrowserScrollTop: 0,
+      apiBrowserVirtualWindowStart: 0,
+      apiBrowserVirtualWindowEnd: 0,
       errorSearch: '',
       errorStatusFilter: '',
       errorCategoryFilter: '',
@@ -69,6 +100,10 @@ const state: DashboardState = {
     function isFeatureEnabled(featureName: string): boolean {
       const features = state.status?.project?.policy?.features || [];
       return features.includes(featureName);
+    }
+
+    function isMaintainerMode(): boolean {
+      return document.body.dataset.maintainer === '1' || Boolean(state.status?.project?.is_maintainer);
     }
 
     function fmtDate(value: any) {
@@ -133,6 +168,289 @@ const state: DashboardState = {
       if (ui.densitySelect) ui.densitySelect.value = state.density;
     }
 
+    function normalizeApiBrowserDensity(value: unknown): 'comfortable' | 'compact' | 'dense' {
+      const candidate = String(value || 'comfortable').toLowerCase();
+      return API_BROWSER_DENSITIES.includes(candidate as typeof API_BROWSER_DENSITIES[number])
+        ? candidate as 'comfortable' | 'compact' | 'dense'
+        : 'comfortable';
+    }
+
+    function apiBrowserDensityLabel(density: unknown): string {
+      const normalized = normalizeApiBrowserDensity(density);
+      if (normalized === 'compact') return 'Compact';
+      if (normalized === 'dense') return 'Dense';
+      return 'Comfortable';
+    }
+
+    function apiBrowserDensityMetrics(density: unknown): {
+      rowHeight: number;
+      tableGap: number;
+      gridGap: number;
+      headPadY: number;
+      headPadX: number;
+      rowPadY: number;
+      rowPadX: number;
+    } {
+      const normalized = normalizeApiBrowserDensity(density);
+      if (normalized === 'compact') {
+        return { rowHeight: 62, tableGap: 5, gridGap: 7, headPadY: 7, headPadX: 9, rowPadY: 8, rowPadX: 9 };
+      }
+      if (normalized === 'dense') {
+        return { rowHeight: 54, tableGap: 4, gridGap: 6, headPadY: 6, headPadX: 8, rowPadY: 7, rowPadX: 8 };
+      }
+      return { rowHeight: 72, tableGap: 6, gridGap: 8, headPadY: 8, headPadX: 10, rowPadY: 10, rowPadX: 10 };
+    }
+
+    function modelFieldName(value: unknown): string {
+      const raw = String(value || '').trim().replace(/\[\]/g, '');
+      if (!raw) return '';
+      return raw;
+    }
+
+    function formatFieldPreview(names: string[], limit = 3): string {
+      const unique = [...new Set(names.map((name) => modelFieldName(name)).filter(Boolean))];
+      if (!unique.length) return '';
+      const preview = unique.slice(0, limit);
+      if (preview.length === 1) return preview[0];
+      if (preview.length === 2) return `${preview[0]} and ${preview[1]}`;
+      if (unique.length > limit) return `${preview.join(', ')}, and ${unique.length - limit} more`;
+      return preview.join(', ');
+    }
+
+    function modelSetupAdvice(fields: FieldRole[] = []): ModelSetupAdvice {
+      const rows = Array.isArray(fields) ? fields.filter(Boolean) : [];
+      type RankedCandidate = { name: string; score: number };
+      const segmentCandidates: RankedCandidate[] = [];
+      const metricCandidates: RankedCandidate[] = [];
+      const timeCandidates: RankedCandidate[] = [];
+      const textFields: string[] = [];
+      const numericFields: string[] = [];
+      const temporalFields: string[] = [];
+      const weakFields: string[] = [];
+
+      const pushUnique = (list: string[], value: string): void => {
+        const clean = modelFieldName(value);
+        if (!clean || list.includes(clean)) return;
+        list.push(clean);
+      };
+
+      const pushRanked = (list: RankedCandidate[], value: string, score: number): void => {
+        const clean = modelFieldName(value);
+        if (!clean || score <= 0) return;
+        const existing = list.find((item) => item.name === clean);
+        if (existing) {
+          existing.score = Math.max(existing.score, score);
+          return;
+        }
+        list.push({ name: clean, score });
+      };
+
+      const rankNames = (list: RankedCandidate[]): string[] => {
+        return [...list]
+          .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+          .map((item) => item.name);
+      };
+
+      const scoreTimeCandidate = (field: FieldRole, lower: string, annotation: string): number => {
+        let score = 0;
+        if (field?.time_candidate) score += 18;
+        if (String(field?.suggested_role || '').toLowerCase() === 'time') score += 18;
+        if (annotation === 'datetime' || annotation === 'date') score += 20;
+        if (lower.includes('snapshot')) score += 24;
+        if (lower.includes('timestamp')) score += 15;
+        if (lower.includes('created_at')) score += 8;
+        if (lower.includes('updated_at')) score += 8;
+        if (lower.includes('period')) score += 18;
+        if (lower.includes('date')) score += 12;
+        if (lower.includes('time')) score += 12;
+        return score;
+      };
+
+      const scoreMetricCandidate = (field: FieldRole, lower: string, annotation: string): number => {
+        let score = 0;
+        if (String(field?.kind || '').toLowerCase() === 'kpi') score += 18;
+        if (['int', 'integer', 'float', 'decimal', 'double', 'number'].includes(annotation)) score += 18;
+        if (lower.includes('amount')) score += 14;
+        if (lower.includes('price')) score += 14;
+        if (lower.includes('revenue')) score += 16;
+        if (lower.includes('value')) score += 12;
+        if (lower.includes('total')) score += 14;
+        if (lower.includes('rate')) score += 12;
+        if (lower.includes('percentage')) score += 14;
+        if (lower.includes('score')) score += 12;
+        if (lower.includes('in_stock')) score += 10;
+        if (lower.includes('units')) score += 12;
+        if (lower.includes('count')) score += 12;
+        if (lower.includes('quantity')) score += 12;
+        if (lower.includes('cost')) score += 12;
+        if (lower.includes('sales')) score += 14;
+        if (lower.includes('rsv')) score += 16;
+        return score;
+      };
+
+      const scoreSegmentCandidate = (field: FieldRole, lower: string, annotation: string): number => {
+        let score = 0;
+        if (String(field?.kind || '').toLowerCase() === 'dimension') score += 18;
+        if (annotation === 'str' || annotation === 'string') score += 16;
+        if (annotation.includes('enum')) score += 16;
+        if (annotation.includes('literal')) score += 16;
+        if (lower.includes('retailer')) score += 24;
+        if (lower.includes('tenant')) score += 16;
+        if (lower.includes('region')) score += 16;
+        if (lower.includes('country')) score += 14;
+        if (lower.includes('category')) score += 14;
+        if (lower.includes('type')) score += 12;
+        if (lower.includes('kind')) score += 12;
+        if (lower.includes('code')) score += 12;
+        if (lower.includes('group')) score += 10;
+        if (lower.includes('sku')) score += 12;
+        if (lower.includes('status')) score += 12;
+        if (lower.includes('name')) score += 12;
+        if (lower.includes('label')) score += 12;
+        if (lower.includes('brand')) score += 12;
+        if (lower.includes('store')) score += 12;
+        if (lower.includes('channel')) score += 12;
+        if (lower.includes('id')) score += 10;
+        return score;
+      };
+
+      rows.forEach((field) => {
+        const name = modelFieldName(field?.name);
+        if (!name) return;
+        const lower = name.toLowerCase();
+        const annotation = String(field?.annotation || field?.type || '').toLowerCase();
+        const timeScore = scoreTimeCandidate(field, lower, annotation);
+        if (timeScore > 0) {
+          pushRanked(timeCandidates, name, timeScore);
+          if (annotation === 'date' || annotation === 'datetime' || lower.includes('time') || lower.includes('date') || lower.includes('timestamp') || lower.includes('created_at') || lower.includes('updated_at') || lower.includes('period')) {
+            pushUnique(temporalFields, name);
+          }
+          return;
+        }
+
+        const metricScore = scoreMetricCandidate(field, lower, annotation);
+        const segmentScore = scoreSegmentCandidate(field, lower, annotation);
+
+        if (metricScore >= segmentScore && metricScore > 0) {
+          pushRanked(metricCandidates, name, metricScore);
+          if (['int', 'integer', 'float', 'decimal', 'double', 'number'].includes(annotation)) {
+            pushUnique(numericFields, name);
+          }
+        } else if (segmentScore > 0) {
+          pushRanked(segmentCandidates, name, segmentScore);
+          if (annotation === 'str' || annotation === 'string' || annotation.includes('enum') || annotation.includes('literal')) {
+            pushUnique(textFields, name);
+          }
+        } else {
+          pushUnique(weakFields, name);
+          if (annotation === 'str' || annotation === 'string' || annotation.includes('enum') || annotation.includes('literal')) {
+            pushUnique(textFields, name);
+          }
+          if (['int', 'integer', 'float', 'decimal', 'double', 'number'].includes(annotation)) {
+            pushUnique(numericFields, name);
+          }
+          if (annotation === 'date' || annotation === 'datetime' || lower.includes('time') || lower.includes('date') || lower.includes('timestamp') || lower.includes('created_at') || lower.includes('updated_at') || lower.includes('period')) {
+            pushUnique(temporalFields, name);
+          }
+        }
+      });
+
+      const orderedSegmentCandidates = rankNames(segmentCandidates);
+      const orderedMetricCandidates = rankNames(metricCandidates);
+      const orderedTimeCandidates = rankNames(timeCandidates);
+
+      const missingRoles: string[] = [];
+      if (!orderedSegmentCandidates.length) missingRoles.push('Segment');
+      if (!orderedMetricCandidates.length) missingRoles.push('Metric');
+      if (!orderedTimeCandidates.length) missingRoles.push('Time');
+
+      const ready = missingRoles.length === 0;
+      const candidateCount = orderedSegmentCandidates.length + orderedMetricCandidates.length + orderedTimeCandidates.length;
+      if (!rows.length) {
+        return {
+          ready: false,
+          summary: 'Jin found the Pydantic model, but it does not expose any fields yet.',
+          detail: 'Add typed response fields so Jin can identify Segment, Metric, and Time candidates.',
+          missingRoles,
+          segmentCandidates: orderedSegmentCandidates,
+          metricCandidates: orderedMetricCandidates,
+          timeCandidates: orderedTimeCandidates,
+          weakFields,
+          candidateCount,
+        };
+      }
+
+      if (ready) {
+        return {
+          ready: true,
+          summary: 'Jin can pre-fill Segment, Metric, and Time from the Pydantic response model before any traffic arrives.',
+          detail: 'The model exposes clear Segment, Metric, and Time candidates already.',
+          missingRoles,
+          segmentCandidates: orderedSegmentCandidates,
+          metricCandidates: orderedMetricCandidates,
+          timeCandidates: orderedTimeCandidates,
+          weakFields,
+          candidateCount,
+        };
+      }
+
+      const detailParts: string[] = [];
+      if (!orderedSegmentCandidates.length) {
+        detailParts.push(
+          textFields.length
+            ? `No clear Segment fields yet. Closest text-like fields: ${formatFieldPreview(textFields)}. Use a stable string or enum for grouping.`
+            : 'No clear Segment fields yet. Add a stable string or enum field for grouping, like retailer or region.',
+        );
+      } else {
+        detailParts.push(
+          orderedSegmentCandidates.length > 1
+            ? `Best Segment candidate: ${orderedSegmentCandidates[0]}. Next: ${orderedSegmentCandidates[1]}.`
+            : `Best Segment candidate: ${orderedSegmentCandidates[0]}.`,
+        );
+      }
+      if (!orderedMetricCandidates.length) {
+        detailParts.push(
+          numericFields.length
+            ? `No clear Metric fields yet. Closest numeric fields: ${formatFieldPreview(numericFields)}. Mark one as the KPI you want to monitor.`
+            : 'No clear Metric fields yet. Add a typed int, float, or Decimal field for the KPI you want to monitor.',
+        );
+      } else {
+        detailParts.push(
+          orderedMetricCandidates.length > 1
+            ? `Best Metric candidate: ${orderedMetricCandidates[0]}. Next: ${orderedMetricCandidates[1]}.`
+            : `Best Metric candidate: ${orderedMetricCandidates[0]}.`,
+        );
+      }
+      if (!orderedTimeCandidates.length) {
+        detailParts.push(
+          temporalFields.length
+            ? `No clear Time field yet. Closest date-like fields: ${formatFieldPreview(temporalFields)}. Mark one as date or datetime if this API is time-based.`
+            : 'No clear Time field yet. Add a typed date or datetime field like snapshot_date or created_at if this API is time-based.',
+        );
+      } else {
+        detailParts.push(
+          orderedTimeCandidates.length > 1
+            ? `Best Time candidate: ${orderedTimeCandidates[0]}. Next: ${orderedTimeCandidates[1]}.`
+            : `Best Time candidate: ${orderedTimeCandidates[0]}.`,
+        );
+      }
+      if (weakFields.length) {
+        detailParts.push(`Weak or generic fields: ${formatFieldPreview(weakFields)}.`);
+      }
+
+      return {
+        ready: false,
+        summary: `Jin found the Pydantic model, but ${missingRoles.join(', ')} still need clearer fields.`,
+        detail: detailParts.join(' '),
+        missingRoles,
+        segmentCandidates: orderedSegmentCandidates,
+        metricCandidates: orderedMetricCandidates,
+        timeCandidates: orderedTimeCandidates,
+        weakFields,
+        candidateCount,
+      };
+    }
+
     function inferSeverityClass(item: any) {
       return item?.severity === 'critical' ? 'critical' : item?.status || item?.severity || 'active';
     }
@@ -173,6 +491,27 @@ const state: DashboardState = {
         items: items.slice((safePage - 1) * pageSize, safePage * pageSize),
         page: safePage,
         totalPages,
+      };
+    }
+
+    function apiBrowserVirtualWindow(totalItems: number, scrollTop: number, options: { rowHeight?: number; windowRows?: number; overscan?: number } = {}) {
+      const rowHeight = Math.max(36, Math.round(Number(options.rowHeight) || 72));
+      const windowRows = Math.max(12, Math.round(Number(options.windowRows) || 28));
+      const overscan = Math.max(2, Math.round(Number(options.overscan) || 8));
+      const total = Math.max(0, Math.round(Number(totalItems) || 0));
+      if (!total) {
+        return { start: 0, end: 0, rowHeight, windowRows, overscan };
+      }
+      const safeScrollTop = Math.max(0, Math.round(Number(scrollTop) || 0));
+      const firstVisible = Math.max(0, Math.floor(safeScrollTop / rowHeight));
+      const visibleStart = Math.max(0, firstVisible - overscan);
+      const visibleEnd = Math.min(total, visibleStart + windowRows);
+      return {
+        start: visibleStart,
+        end: Math.max(visibleEnd, visibleStart + 1),
+        rowHeight,
+        windowRows,
+        overscan,
       };
     }
 
@@ -234,6 +573,13 @@ const state: DashboardState = {
     function persistPreferences() {
       localStorage.setItem('jin-api-filter', state.apiFilter || '');
       localStorage.setItem('jin-api-status-filter', state.apiStatusFilter || '');
+      localStorage.setItem('jin-api-browser-mode', state.apiBrowserMode || 'grouped');
+      localStorage.setItem('jin-api-browser-density', state.apiBrowserDensity || 'comfortable');
+      localStorage.setItem('jin-api-browser-sort', state.apiBrowserSort || 'path');
+      localStorage.setItem('jin-api-browser-sort-direction', state.apiBrowserSortDirection || 'asc');
+      localStorage.setItem('jin-api-browser-columns', JSON.stringify(apiBrowserVisibleColumnKeys()));
+      localStorage.setItem('jin-api-browser-column-order', JSON.stringify(apiBrowserColumnOrder()));
+      localStorage.setItem('jin-api-browser-column-widths', JSON.stringify(apiBrowserColumnWidths()));
       localStorage.setItem('jin-error-search', state.errorSearch || '');
       localStorage.setItem('jin-error-status-filter', state.errorStatusFilter || '');
       localStorage.setItem('jin-error-category-filter', state.errorCategoryFilter || '');
@@ -309,6 +655,67 @@ const state: DashboardState = {
       };
     }
 
+    function apiBrowserVisibleColumnKeys(): string[] {
+      return apiBrowserColumnOrder().filter((column) => state.apiBrowserColumns?.[column] !== false);
+    }
+
+    function apiBrowserColumnOrder(): typeof API_BROWSER_OPTIONAL_COLUMNS[number][] {
+      const rawOrder = Array.isArray(state.apiBrowserColumnOrder) ? state.apiBrowserColumnOrder : [];
+      const seen = new Set<string>();
+      const order = rawOrder
+        .map((column) => String(column))
+        .filter((column): column is typeof API_BROWSER_OPTIONAL_COLUMNS[number] => API_BROWSER_OPTIONAL_COLUMNS.includes(column as typeof API_BROWSER_OPTIONAL_COLUMNS[number]))
+        .filter((column) => {
+          if (seen.has(column)) return false;
+          seen.add(column);
+          return true;
+        });
+      API_BROWSER_OPTIONAL_COLUMNS.forEach((column) => {
+        if (!seen.has(column)) order.push(column);
+      });
+      return order;
+    }
+
+    function apiBrowserColumnsSummary(columns?: string[]): string {
+      const source = Array.isArray(columns) ? columns : API_BROWSER_OPTIONAL_COLUMNS.slice();
+      const visible = source.filter((column) => API_BROWSER_OPTIONAL_COLUMNS.includes(column as typeof API_BROWSER_OPTIONAL_COLUMNS[number])) as Array<typeof API_BROWSER_OPTIONAL_COLUMNS[number]>;
+      if (!visible.length) return 'path only';
+      if (visible.length === API_BROWSER_OPTIONAL_COLUMNS.length) return 'all columns';
+      return `columns: ${visible.join(', ')}`;
+    }
+
+    function apiBrowserOrderSummary(order?: string[]): string {
+      const columns = Array.isArray(order) ? order : API_BROWSER_OPTIONAL_COLUMNS.slice();
+      const visible = columns.filter((column): column is typeof API_BROWSER_OPTIONAL_COLUMNS[number] =>
+        API_BROWSER_OPTIONAL_COLUMNS.includes(column as typeof API_BROWSER_OPTIONAL_COLUMNS[number]),
+      );
+      if (!visible.length) return 'default order';
+      return `order: ${visible.join(', ')}`;
+    }
+
+    function apiBrowserColumnWidths(): Record<typeof API_BROWSER_OPTIONAL_COLUMNS[number], number> {
+      const rawWidths = state.apiBrowserColumnWidths || {};
+      return API_BROWSER_OPTIONAL_COLUMNS.reduce((acc, column) => {
+        const fallback = API_BROWSER_COLUMN_DEFAULT_WIDTHS[column];
+        const value = Number(rawWidths[column]);
+        acc[column] = Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
+        return acc;
+      }, {} as Record<typeof API_BROWSER_OPTIONAL_COLUMNS[number], number>);
+    }
+
+    function apiBrowserWidthSummary(widths?: Record<string, number>): string {
+      const source = widths || apiBrowserColumnWidths();
+      const entries = API_BROWSER_OPTIONAL_COLUMNS
+        .map((column) => {
+          const value = Number(source[column]);
+          const fallback = API_BROWSER_COLUMN_DEFAULT_WIDTHS[column];
+          return Number.isFinite(value) && value > 0 ? { column, value: Math.round(value), fallback } : { column, value: fallback, fallback };
+        })
+        .filter(({ value, fallback }) => value !== fallback)
+        .map(({ column, value }) => `${column} ${value}px`);
+      return entries.length ? `widths: ${entries.join(', ')}` : 'default widths';
+    }
+
     function namedViewPayload() {
       return {
         id: Date.now(),
@@ -316,6 +723,13 @@ const state: DashboardState = {
         currentView: state.currentView,
         apiFilter: state.apiFilter,
         apiStatusFilter: state.apiStatusFilter,
+        apiBrowserMode: state.apiBrowserMode,
+        apiBrowserDensity: state.apiBrowserDensity,
+        apiBrowserSort: state.apiBrowserSort,
+        apiBrowserSortDirection: state.apiBrowserSortDirection,
+        apiBrowserColumns: apiBrowserVisibleColumnKeys(),
+        apiBrowserColumnOrder: apiBrowserColumnOrder(),
+        apiBrowserColumnWidths: apiBrowserColumnWidths(),
         errorSearch: state.errorSearch,
         errorStatusFilter: state.errorStatusFilter,
         errorCategoryFilter: state.errorCategoryFilter,
@@ -339,7 +753,7 @@ const state: DashboardState = {
         <div class="saved-view-item">
           <div>
             <strong>${view.name}</strong>
-            <div class="tiny">${view.currentView} • ${view.apiStatusFilter || 'all statuses'} • ${view.density || 'comfortable'} density</div>
+            <div class="tiny">${view.currentView} • ${view.apiStatusFilter || 'all statuses'} • ${view.apiBrowserMode || 'grouped'} browser • ${apiBrowserDensityLabel(view.apiBrowserDensity || 'comfortable')} rows • ${apiBrowserColumnsSummary(view.apiBrowserColumns)} • ${apiBrowserOrderSummary(view.apiBrowserColumnOrder)} • ${apiBrowserWidthSummary(view.apiBrowserColumnWidths)} • ${view.apiBrowserSort || 'path'} ${view.apiBrowserSortDirection || 'asc'} • ${view.density || 'comfortable'} density</div>
           </div>
           <div class="toolbar compact">
             <button class="action secondary" type="button" onclick="applyNamedView(${view.id})">Apply</button>
@@ -347,7 +761,7 @@ const state: DashboardState = {
             <button class="action ghost" type="button" onclick="deleteNamedView(${view.id})">Delete</button>
           </div>
         </div>
-      `).join('') : '<div class="empty">No saved views yet. Save a filter + workspace combination for faster operator workflows.</div>';
+      `).join('') : '<div class="empty">No saved views yet. Save a filter + browser combination for faster operator workflows.</div>';
     }
 
     function sortRows(items: any[], mode: string, valueKey: string) {
@@ -647,18 +1061,44 @@ const state: DashboardState = {
     }
 
     function businessPriorityScore(item: any): number {
-      const severity = severityRank(item) * 20;
-      const pctChange = Math.min(100, Math.abs(Number(item?.pct_change) || 0)) * 0.35;
-      const confidence = normalizedConfidence(item) * 0.15;
+      const severity = severityRank(item) * 18;
+      const pctChange = Math.min(100, Math.abs(Number(item?.pct_change) || 0)) * 0.4;
+      const confidence = normalizedConfidence(item) * 0.18;
       const impact = incidentImpactValue(item);
-      const impactScore = impact <= 0 ? 0 : Math.min(40, Math.log10(impact + 1) * 10);
+      const impactScore = impact <= 0 ? 0 : Math.min(50, Math.log10(impact + 1) * 12);
       const detectedAt = new Date(item?.detected_at || item?.resolved_at || '').getTime();
       const now = Date.now();
       const ageHours = Number.isFinite(detectedAt) ? Math.max(0, (now - detectedAt) / (1000 * 60 * 60)) : 9999;
-      const recency = ageHours <= 24 ? 20 : ageHours <= 72 ? 12 : ageHours <= 168 ? 6 : 0;
+      const recency = ageHours <= 12 ? 22 : ageHours <= 48 ? 16 : ageHours <= 120 ? 8 : 0;
       const status = String(item?.status || item?.incident_status || 'active').toLowerCase();
-      const statusAdjustment = status === 'resolved' ? -100 : status === 'suppressed' ? -14 : status === 'snoozed' ? -10 : status === 'acknowledged' ? -5 : 0;
+      const statusAdjustment = status === 'resolved' ? -100 : status === 'suppressed' ? -18 : status === 'snoozed' ? -12 : status === 'acknowledged' ? -4 : 0;
       return severity + pctChange + confidence + impactScore + recency + statusAdjustment;
+    }
+
+    function businessPriorityBand(item: any): string {
+      const score = businessPriorityScore(item);
+      if (score >= 110) return 'Critical';
+      if (score >= 80) return 'High';
+      if (score >= 55) return 'Watch';
+      if (score >= 30) return 'Review';
+      return 'Low';
+    }
+
+    function incidentDecisionLabel(item: any): string {
+      const status = String(item?.status || item?.incident_status || 'active').toLowerCase();
+      if (status === 'resolved') return 'Safe for now';
+      if (status === 'suppressed' || status === 'snoozed') return 'Needs attention';
+      const band = businessPriorityBand(item);
+      if (band === 'Critical' || band === 'High') return 'Block release';
+      if (band === 'Watch' || band === 'Review') return 'Needs attention';
+      return 'Safe for now';
+    }
+
+    function incidentDecisionTone(item: any): 'success' | 'warning' | 'danger' {
+      const label = incidentDecisionLabel(item);
+      if (label === 'Block release') return 'danger';
+      if (label === 'Needs attention') return 'warning';
+      return 'success';
     }
 
     function businessPriorityBreakdown(item: any): string[] {
@@ -740,16 +1180,22 @@ export {
   routeGroup,
   paginate,
   renderPagination,
+  apiBrowserVirtualWindow,
   downloadCsv,
   downloadText,
   downloadJson,
   persistPreferences,
+  modelSetupAdvice,
   allIncidentRows,
   incidentRows,
   reportSummary,
   namedViewPayload,
   saveNamedViews,
   renderSavedViews,
+  isMaintainerMode,
+  businessPriorityBand,
+  incidentDecisionLabel,
+  incidentDecisionTone,
   sortRows,
   renderApiSections,
   openIncidentDrawer,
@@ -766,6 +1212,10 @@ export {
   readDefaultNamedViewId,
   currentOperatorHandle,
   normalizeOperatorHandle,
+  apiBrowserVisibleColumnKeys,
+  apiBrowserDensityLabel,
+  apiBrowserDensityMetrics,
+  normalizeApiBrowserDensity,
   sortIncidents,
 };
 (window as any).renderApiSections = renderApiSections;

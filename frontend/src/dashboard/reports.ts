@@ -1,12 +1,20 @@
 import { fmt, fmtDate, incidentRows, reportSummary, state } from './core';
 import type { EndpointDetail } from './types';
 
+function decisionLabelFromCounts(issues: number, unconfirmed: number): 'Safe for now' | 'Needs attention' | 'Block release' {
+  if (issues > 0) return 'Needs attention';
+  if (unconfirmed > 0) return 'Block release';
+  return 'Safe for now';
+}
+
 function buildOverviewReport() {
   const summary = reportSummary();
+  const decision = decisionLabelFromCounts(Number(summary.active_incidents || 0), Number(summary.unconfirmed_endpoints || 0));
   return [
     '# Jin Overview Brief',
     '',
     `Generated: ${fmtDate(summary.generated_at)}`,
+    `Decision: ${decision}`,
     `Tracked APIs: ${summary.endpoints_tracked}`,
     `Healthy APIs: ${summary.healthy_endpoints}`,
     `Unconfirmed APIs: ${summary.unconfirmed_endpoints}`,
@@ -95,10 +103,12 @@ function buildApiReport(detail: EndpointDetail) {
 
 function buildOverviewHtmlReport() {
   const summary = reportSummary();
+  const decision = decisionLabelFromCounts(Number(summary.active_incidents || 0), Number(summary.unconfirmed_endpoints || 0));
   return buildHtmlReport('Jin Overview Brief', [
     {
       title: 'Summary',
       body: [
+        `Decision: ${decision}`,
         `Tracked APIs: ${summary.endpoints_tracked}`,
         `Healthy APIs: ${summary.healthy_endpoints}`,
         `Unconfirmed APIs: ${summary.unconfirmed_endpoints}`,

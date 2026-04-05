@@ -22,10 +22,10 @@ Jin helps FastAPI product and data teams catch business KPI drift in API respons
 - Trigger or schedule checks.
 - See run history and run status.
 
-4. Triage flow
+4. Issue review flow
 - See mismatch details and why it was flagged.
-- Open active issues on Issues page.
-- Resolve or mark in-review from UI.
+- Open active issues on the Issues page.
+- Resolve or mark in-review from the UI.
 
 5. Packaging flow
 - Works for local installs via `pip`, `pipx`, `uv`, and `poetry`.
