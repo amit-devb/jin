@@ -2,7 +2,7 @@ PYTHONPATH_VAR=PYTHONPATH=python
 PYO3_ENV=PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 UV_CACHE=UV_CACHE_DIR=.uv-cache
 
-.PHONY: build-frontend npm-build-frontend typecheck-frontend test-e2e auth-generate develop test-python test-rust coverage-python coverage-rust docs-serve demo-seed demo-run verify verify-full smoke-installs protect-main
+.PHONY: build-frontend npm-build-frontend typecheck-frontend test-e2e auth-generate develop test-python test-rust coverage-python coverage-rust docs-serve demo-seed demo-run verify verify-full smoke-installs protect-main release
 
 build-frontend:
 	$(PYTHONPATH_VAR) .venv/bin/python scripts/build_dashboard_assets.py
@@ -54,3 +54,7 @@ smoke-installs:
 
 protect-main:
 	./scripts/set_branch_protection.sh main
+
+release:
+	@test -n "$(VERSION)" || (echo "Set VERSION=0.1.1" && exit 1)
+	$(PYTHONPATH_VAR) .venv/bin/python scripts/release.py --version "$(VERSION)"

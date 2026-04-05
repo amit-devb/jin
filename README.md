@@ -43,6 +43,7 @@ jin verify --app package.module:app
 jin endpoints list --app package.module:app
 jin issues list
 jin references import --endpoint "/api/revenue/{retailer}/{period}" --file refs.csv
+make release VERSION=0.1.1
 ```
 
 ## Docs
