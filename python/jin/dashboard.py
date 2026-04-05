@@ -32,20 +32,23 @@ def _render_script(js_version: str) -> str:
     return f'  <script src="/jin/assets/dashboard.js?v={js_version}" defer></script>'
 
 
-def _render_document() -> str:
+def _render_document(*, is_maintainer: bool = False) -> str:
     css_version = _asset_version("dashboard.css")
     js_version = _asset_version("dashboard.js")
+    body = DASHBOARD_BODY
+    if is_maintainer:
+        body = body.replace('data-maintainer="0"', 'data-maintainer="1"', 1)
     return "\n".join(
         [
             "<!DOCTYPE html>",
             '<html lang="en">',
             _render_head(css_version),
-            DASHBOARD_BODY,
+            body,
             _render_script(js_version),
             "</html>",
         ]
     )
 
 
-def render_dashboard() -> str:
-    return _render_document()
+def render_dashboard(is_maintainer: bool = False) -> str:
+    return _render_document(is_maintainer=is_maintainer)

@@ -55,11 +55,11 @@ function statusMixChartSvg(endpoints: EndpointStatus[]) {
     ['unconfirmed', 'var(--ink-muted)'],
   ].map(([name, color]) => {
     const width = (counts[name] / total) * 100;
-    const segment = `<rect x="${offset}" y="32" width="${width}" height="26" fill="${color}"></rect>`;
+    const segment = `<rect x="${offset}" y="18" width="${width}" height="18" rx="4" fill="${color}"></rect>`;
     offset += width;
     return segment;
   }).join('');
-  return `<svg class="chart-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${segments}</svg>`;
+  return `<svg class="chart-svg chart-svg-compact" viewBox="0 0 100 56" preserveAspectRatio="none" aria-hidden="true">${segments}</svg>`;
 }
 
 function activityMixChartSvg(endpoints: EndpointStatus[]) {

@@ -134,7 +134,7 @@ def test_router_native_detail_and_anomaly_action_paths(client, monkeypatch: pyte
 
     snoozed = client.post(
         "/jin/api/v2/anomaly/777/status",
-        json={"action": "snoozed", "note": "triage", "snooze_minutes": 15},
+        json={"action": "snoozed", "note": "review", "snooze_minutes": 15},
     )
     assert snoozed.status_code == 200
     assert update_calls[-1]["action"] == "snoozed"

@@ -636,6 +636,7 @@ class JinMiddleware(BaseHTTPMiddleware):
         projects = self._load_license_projects_registry(registry_file)
 
         policy = self.license_client.get_policy()
+        license_backend = self.license_client.backend_mode()
         enforcement_enabled = bool(self.license_enforced)
         current_hash = self._project_license_key(self.project_root, self.db_path)
         legacy_catalog_hash = self._project_catalog_id(self.project_name, self.project_root, self.db_path)
@@ -672,6 +673,8 @@ class JinMiddleware(BaseHTTPMiddleware):
             "trust_score": self.calculate_trust_score(),
             "is_unlicensed": is_unlicensed,
             "license_enforced": enforcement_enabled,
+            "license_backend": license_backend,
+            "license_catalog_present": self.license_client.has_commercial_catalog(),
             "policy": policy_payload,
             "usage": {
                 "current": self.license_client.get_current_usage(),
@@ -821,6 +824,9 @@ class JinMiddleware(BaseHTTPMiddleware):
             "trust_score": meta["trust_score"],
             "is_unlicensed": meta["is_unlicensed"],
             "license_enforced": meta["license_enforced"],
+            "license_backend": meta["license_backend"],
+            "license_catalog_present": meta["license_catalog_present"],
+            "is_maintainer": self._is_maintainer_ui_enabled(),
             "policy": meta["policy"],
             "auth_enabled": self.is_auth_enabled(),
             "auth_mode": "session_cookie" if self.is_auth_enabled() else "disabled",
@@ -828,6 +834,23 @@ class JinMiddleware(BaseHTTPMiddleware):
             and (self.auth_password == "change-me" or not self.auth_password_hash),
             "deployment_model": "client_infra_embedded",
             "recent_errors": list(self.recent_errors),
+        }
+
+    def feature_enabled(self, feature_name: str) -> bool:
+        feature = str(feature_name or "").strip().lower()
+        if not feature:
+            return False
+        policy = self.license_client.get_policy()
+        return feature in {str(item).strip().lower() for item in policy.features}
+
+    @staticmethod
+    def _is_maintainer_ui_enabled() -> bool:
+        return str(os.getenv("JIN_MAINTAINER_UI", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "enabled",
         }
 
     def _projects_catalog_path(self) -> Path:

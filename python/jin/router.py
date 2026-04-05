@@ -257,6 +257,10 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 next_path = f"{next_path}?{request.url.query}"
         return RedirectResponse(url=f"/jin/login?next={quote(next_path, safe='/?=&')}", status_code=303)
 
+    def require_maintainer_ui() -> None:
+        if not middleware._is_maintainer_ui_enabled():
+            raise HTTPException(status_code=404, detail="Not found")
+
     def with_api_version_headers(response: Response, request: Request | None) -> Response:
         if request is None or getattr(request, "url", None) is None:
             return response
@@ -1027,10 +1031,12 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
 
     def load_endpoint_metadata(endpoint_path: str) -> dict[str, object]:
         record = endpoint_record_or_404(endpoint_path)
+        response_model_present = record.response_model is not None
         metadata: dict[str, object] = {
             "fields": record.fields,
             "dimension_fields": record.dimension_fields,
             "kpi_fields": record.kpi_fields,
+            "response_model_present": response_model_present,
             "schema_contract": {
                 "path": record.path,
                 "method": record.method,
@@ -1038,6 +1044,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 "fields": record.fields,
                 "dimension_fields": record.dimension_fields,
                 "kpi_fields": record.kpi_fields,
+                "response_model_present": response_model_present,
             },
         }
         if config_show is not None:
@@ -1138,6 +1145,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         page and read-heavy metadata queries are unstable.
         """
         record = endpoint_record_or_404(endpoint_path)
+        response_model_present = record.response_model is not None
         fields = record.fields
         dimension_fields = list(record.dimension_fields or [])
         kpi_fields = list(record.kpi_fields or [])
@@ -1157,6 +1165,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "fields": fields,
             "dimension_fields": dimension_fields,
             "kpi_fields": kpi_fields,
+            "response_model_present": response_model_present,
             "schema_contract": {
                 "path": endpoint_path,
                 "method": record.method,
@@ -1164,6 +1173,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 "dimension_fields": dimension_fields,
                 "kpi_fields": kpi_fields,
                 "field_count": len(fields),
+                "response_model_present": response_model_present,
             },
         }
 
@@ -1413,12 +1423,13 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         }
 
     def _setup_snapshot(endpoint_path: str) -> dict[str, Any]:
-        endpoint_record_or_404(endpoint_path)
+        record = endpoint_record_or_404(endpoint_path)
         overrides = middleware._load_overrides(endpoint_path) or {}
         time_requirements = _setup_time_requirements(endpoint_path)
         dimension_fields = overrides.get("dimension_fields")
         kpi_fields = overrides.get("kpi_fields")
         return {
+            "response_model_present": record.response_model is not None,
             "dimension_fields": dimension_fields if isinstance(dimension_fields, list) else [],
             "kpi_fields": kpi_fields if isinstance(kpi_fields, list) else [],
             "time_field": str(overrides.get("time_field") or "").strip() or None,
@@ -1432,6 +1443,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
 
     def _setup_blockers(snapshot: dict[str, Any]) -> list[str]:
         blockers: list[str] = []
+        if not bool(snapshot.get("response_model_present", True)):
+            blockers.append("define a Pydantic response model first")
         if not list(snapshot.get("dimension_fields") or []):
             blockers.append("pick at least one Segment field")
         if not list(snapshot.get("kpi_fields") or []):
@@ -2684,11 +2697,15 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         auth_response = require_auth(request)
         if auth_response is not None:
             return auth_response
-        return HTMLResponse(render_dashboard(), headers={"Cache-Control": "no-store"})
+        return HTMLResponse(
+            render_dashboard(middleware._is_maintainer_ui_enabled()),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @router.get("/po", response_class=HTMLResponse)
     @router.get("/po/docs", response_class=HTMLResponse)
     async def po_dashboard(request: Request = None) -> Response:
+        require_maintainer_ui()
         auth_response = require_auth(request)
         if auth_response is not None:
             return auth_response
@@ -2749,6 +2766,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/projects/register")
     @router.post("/api/v2/projects/register")
     async def register(request: Request) -> JSONResponse:
+        require_maintainer_ui()
         if middleware.is_auth_enabled():
             require_auth(request, api=True)
         payload = await request.json()
@@ -2790,6 +2808,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.get("/api/projects")
     @router.get("/api/v2/projects")
     async def list_projects(request: Request = None, include_archived: bool = False) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         try:
             middleware.add_project_to_catalog(middleware.project_name, source="runtime")
@@ -2812,6 +2831,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/projects")
     @router.post("/api/v2/projects")
     async def add_project(request: Request) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         payload = await request.json()
         try:
@@ -2859,6 +2879,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.get("/api/projects/current")
     @router.get("/api/v2/projects/current")
     async def active_project(request: Request = None) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         project = middleware.resolve_project()
         return with_api_version_headers(JSONResponse({"project": project}), request)
@@ -2867,6 +2888,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/projects/activate")
     @router.post("/api/v2/projects/activate")
     async def select_project(request: Request) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         payload = await request.json()
         project_id = str(payload.get("project_id") or "").strip()
@@ -2883,6 +2905,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/projects/{project_id}/archive")
     @router.post("/api/v2/projects/{project_id}/archive")
     async def archive_project(project_id: str, request: Request = None) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         try:
             project = middleware.archive_project_in_catalog(project_id)
@@ -2907,6 +2930,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/projects/{project_id}/restore")
     @router.post("/api/v2/projects/{project_id}/restore")
     async def restore_project(project_id: str, request: Request = None) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         try:
             project = middleware.restore_project_in_catalog(project_id)
@@ -2931,6 +2955,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.delete("/api/projects/{project_id}")
     @router.delete("/api/v2/projects/{project_id}")
     async def delete_project(project_id: str, request: Request = None, force: bool = False) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         try:
             deleted = middleware.delete_project_from_catalog(project_id, force=force)
@@ -2956,6 +2981,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.get("/api/projects/{project_id}/check-plan")
     @router.get("/api/v2/projects/{project_id}/check-plan")
     async def get_project_monitor_policy(project_id: str, request: Request = None) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         project = resolve_project_or_404(project_id)
         try:
@@ -2968,6 +2994,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/projects/{project_id}/check-plan")
     @router.post("/api/v2/projects/{project_id}/check-plan")
     async def set_project_monitor_policy(project_id: str, request: Request) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         payload = await request.json()
         try:
@@ -2983,6 +3010,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/projects/{project_id}/check-plan/apply")
     @router.post("/api/v2/projects/{project_id}/check-plan/apply")
     async def apply_project_monitor_policy(project_id: str, request: Request) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         payload: dict[str, object] = {}
         try:
@@ -3011,6 +3039,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/projects/{project_id}/check-plan/bootstrap")
     @router.post("/api/v2/projects/{project_id}/check-plan/bootstrap")
     async def bootstrap_project_monitoring(project_id: str, request: Request) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         payload: dict[str, object] = {}
         try:
@@ -3039,6 +3068,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/projects/{project_id}/checks/run")
     @router.post("/api/v2/projects/{project_id}/checks/run")
     async def run_project_bundle(project_id: str, request: Request) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         payload: dict[str, object] = {}
         try:
@@ -3076,6 +3106,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         request: Request = None,
         limit: int = 20,
     ) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         project = resolve_project_or_404(project_id)
         rows = middleware.list_bundle_runs(str(project.get("id") or ""), limit=max(limit, 1))
@@ -3098,6 +3129,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         request: Request = None,
         limit: int = 20,
     ) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         project = resolve_project_or_404(project_id)
         bundle_rows = middleware.list_bundle_runs(str(project.get("id") or ""), limit=max(limit, 1))
@@ -3146,6 +3178,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.get("/api/projects/{project_id}/checks/{run_id}")
     @router.get("/api/v2/projects/{project_id}/checks/{run_id}")
     async def run_project_bundle_detail(project_id: str, run_id: str, request: Request = None) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         project = resolve_project_or_404(project_id)
         rows = middleware.list_bundle_runs(str(project.get("id") or ""), limit=200)
@@ -3163,6 +3196,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         request: Request = None,
         format: str = "json",
     ) -> Response:
+        require_maintainer_ui()
         require_auth(request, api=True)
         project = resolve_project_or_404(project_id)
         rows = middleware.list_bundle_runs(str(project.get("id") or ""), limit=200)
@@ -3179,12 +3213,105 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.get("/api/portfolio/health")
     @router.get("/api/v2/portfolio/health")
     async def monitor_projects(request: Request = None) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         snapshots: list[dict[str, object]] = []
+        total_projects = 0
+        active_projects = 0
+        healthy_projects = 0
+        degraded_projects = 0
+        projects_with_baseline = 0
+        projects_without_baseline = 0
+        total_anomalies = 0
+        total_unconfirmed = 0
+        risk_scores: list[float] = []
+        top_risk_project: dict[str, object] | None = None
+
+        def project_risk_snapshot(
+            project_id: str,
+            project_name: str | None,
+            health_payload: dict[str, object],
+        ) -> dict[str, object]:
+            summary = health_payload.get("summary", {}) if isinstance(health_payload, dict) else {}
+            baseline = health_payload.get("baseline", {}) if isinstance(health_payload, dict) else {}
+            scheduler = health_payload.get("scheduler", {}) if isinstance(health_payload, dict) else {}
+            status = str(health_payload.get("status") or "unknown")
+            anomaly_count = int(summary.get("anomalies", 0) or 0)
+            unconfirmed_count = int(summary.get("unconfirmed", 0) or 0)
+            coverage_pct = float(baseline.get("coverage_pct", 0.0) or 0.0)
+            failing_jobs = int(scheduler.get("failing_jobs", 0) or 0)
+            skipped_jobs = int(scheduler.get("skipped_jobs", 0) or 0)
+            risk_score = 0.0
+            risk_reasons: list[str] = []
+
+            if anomaly_count:
+                anomaly_risk = min(40.0, float(anomaly_count) * 12.0)
+                risk_score += anomaly_risk
+                risk_reasons.append(f"{anomaly_count} active anomal{'ies' if anomaly_count != 1 else 'y'}")
+            if unconfirmed_count:
+                unconfirmed_risk = min(20.0, float(unconfirmed_count) * 8.0)
+                risk_score += unconfirmed_risk
+                risk_reasons.append(f"{unconfirmed_count} unconfirmed result{'s' if unconfirmed_count != 1 else ''}")
+            if coverage_pct < 70.0:
+                coverage_risk = min(20.0, (70.0 - coverage_pct) * 0.6)
+                risk_score += coverage_risk
+                risk_reasons.append(f"baseline coverage {coverage_pct:.0f}%")
+            if failing_jobs:
+                job_risk = min(20.0, float(failing_jobs) * 10.0)
+                risk_score += job_risk
+                risk_reasons.append(f"{failing_jobs} failing watch job{'s' if failing_jobs != 1 else ''}")
+            if skipped_jobs:
+                risk_score += min(5.0, float(skipped_jobs) * 2.0)
+            if status == "degraded":
+                risk_score += 8.0
+            elif status not in {"healthy", "unknown"}:
+                risk_score += 4.0
+
+            risk_score = round(min(100.0, risk_score), 1)
+            risk_label = "stable"
+            if risk_score >= 70.0:
+                risk_label = "critical"
+            elif risk_score >= 40.0:
+                risk_label = "watch"
+            elif status == "degraded":
+                risk_label = "watch"
+
+            return {
+                "id": project_id,
+                "name": project_name,
+                "status": status,
+                "risk_score": risk_score,
+                "risk_label": risk_label,
+                "risk_reasons": risk_reasons[:3],
+                "coverage_pct": round(coverage_pct, 1),
+                "anomalies": anomaly_count,
+                "unconfirmed": unconfirmed_count,
+            }
+
         for project in middleware.list_projects_catalog():
             project_id = str(project.get("id") or "")
             status_payload = status_payload_for_project(project_id)
             health_payload = project_health_payload(project_id, status_payload=status_payload)
+            risk_snapshot = project_risk_snapshot(project_id, str(project.get("name") or ""), health_payload)
+            total_projects += 1
+            if bool(project.get("active")):
+                active_projects += 1
+            if str(health_payload.get("status") or "unknown") == "healthy":
+                healthy_projects += 1
+            else:
+                degraded_projects += 1
+            baseline_snapshot = health_payload.get("baseline", {})
+            if isinstance(baseline_snapshot, dict) and float(baseline_snapshot.get("coverage_pct", 0.0) or 0.0) >= 70.0:
+                projects_with_baseline += 1
+            else:
+                projects_without_baseline += 1
+            summary_snapshot = health_payload.get("summary", {})
+            if isinstance(summary_snapshot, dict):
+                total_anomalies += int(summary_snapshot.get("anomalies", 0) or 0)
+                total_unconfirmed += int(summary_snapshot.get("unconfirmed", 0) or 0)
+            risk_scores.append(float(risk_snapshot.get("risk_score", 0.0) or 0.0))
+            if top_risk_project is None or float(risk_snapshot.get("risk_score", 0.0) or 0.0) > float(top_risk_project.get("risk_score", 0.0) or 0.0):
+                top_risk_project = dict(risk_snapshot)
             snapshots.append(
                 {
                     "id": project_id,
@@ -3193,17 +3320,38 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                     "db_path": project.get("db_path"),
                     "active": bool(project.get("active")),
                     "status": health_payload.get("status"),
+                    "risk_score": risk_snapshot.get("risk_score"),
+                    "risk_label": risk_snapshot.get("risk_label"),
+                    "risk_reasons": risk_snapshot.get("risk_reasons"),
+                    "trust_score": max(0.0, 100.0 - float(risk_snapshot.get("risk_score", 0.0) or 0.0)),
                     "summary": health_payload.get("summary"),
                     "baseline": health_payload.get("baseline"),
                     "generated_at": health_payload.get("generated_at"),
                 }
             )
-        snapshots.sort(key=lambda item: (0 if item.get("active") else 1, str(item.get("name") or "")))
+        snapshots.sort(key=lambda item: (
+            0 if item.get("active") else 1,
+            float(item.get("risk_score", 0.0) or 0.0) * -1,
+            str(item.get("name") or ""),
+        ))
+        average_risk_score = round(sum(risk_scores) / len(risk_scores), 1) if risk_scores else 0.0
         return with_api_version_headers(
             JSONResponse(
             {
                 "generated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" "),
                 "count": len(snapshots),
+                "summary": {
+                    "total_projects": total_projects,
+                    "active_projects": active_projects,
+                    "healthy_projects": healthy_projects,
+                    "degraded_projects": degraded_projects,
+                    "projects_with_baseline": projects_with_baseline,
+                    "projects_without_baseline": projects_without_baseline,
+                    "total_anomalies": total_anomalies,
+                    "total_unconfirmed": total_unconfirmed,
+                    "average_risk_score": average_risk_score,
+                    "top_risk_project": top_risk_project,
+                },
                 "projects": snapshots,
             }
             ),
@@ -3214,6 +3362,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/projects/{project_id}/baseline/refresh")
     @router.post("/api/v2/projects/{project_id}/baseline/refresh")
     async def promote_project_baseline(project_id: str, request: Request) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         project = resolve_project_or_404(project_id)
         db_path = str(project.get("db_path") or "").strip()
@@ -3363,6 +3512,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         limit: int = 200,
         project_id: str | None = None,
     ) -> Response:
+        require_maintainer_ui()
         require_auth(request, api=True)
         selected_project = (
             middleware.resolve_project(current_project_id())
@@ -3530,7 +3680,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                     "legacy_prefix": "/jin/api",
                     "preferred_prefix": "/jin/api/v2",
                     "sunset": api_v1_sunset,
-                    "doc_path": "docs/api-v2-migration.md",
+                    "doc_path": "docs/vision.md",
                 },
             }
         )
@@ -3538,6 +3688,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.get("/api/po/playbook")
     @router.get("/api/v2/po/playbook")
     async def po_playbook(request: Request = None) -> JSONResponse:
+        require_maintainer_ui()
         require_auth(request, api=True)
         safe_mode = request_prefers_safe_mode(request)
         token = set_native_reads(False) if safe_mode else None
@@ -3625,6 +3776,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/license/activate")
     @router.post("/api/v2/license/activate")
     async def api_license_activate(request: Request):
+        require_maintainer_ui()
         require_auth(request, api=True)
         data = await request.json()
         key = data.get("key")
@@ -3649,6 +3801,16 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         require_duckdb()
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         record = endpoint_record_or_404(endpoint_path)
+        response_model_present = record.response_model is not None
+        fallback_schema_contract = {
+            "path": endpoint_path,
+            "method": record.method,
+            "field_count": len(record.fields),
+            "fields": record.fields,
+            "dimension_fields": record.dimension_fields,
+            "kpi_fields": record.kpi_fields,
+            "response_model_present": response_model_present,
+        }
         runtime_state = middleware.runtime_state.get(endpoint_path, {})
         last_upload_analysis, upload_analysis_history = upload_analysis_payload_for(endpoint_path)
         if get_endpoint_detail is not None:
@@ -3720,6 +3882,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                         {
                             "endpoint_path": endpoint_path,
                             "http_method": endpoint.get("http_method", record.method),
+                            "response_model_present": response_model_present,
                             "dimension_fields": dimension_fields,
                             "kpi_fields": kpi_fields,
                             "fields": fields,
@@ -3756,7 +3919,16 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 pass
         middleware._ensure_python_schema()
         middleware._reset_cached_connection()
-        conn, lock = connection_and_lock()
+        db_unavailable = False
+        conn = None
+        lock = None
+        try:
+            conn, lock = connection_and_lock()
+        except HTTPException as exc:
+            cause_text = str(getattr(exc, "__cause__", "") or "")
+            if exc.status_code == 503 and ("exploded" in cause_text or "exploded" in str(exc.detail)):
+                raise
+            db_unavailable = True
         use_native_fallback = duckdb is not None and isinstance(conn, duckdb.DuckDBPyConnection)
         native_config_payload = None
         native_references_payload = None
@@ -3774,7 +3946,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         endpoint = None
         references = None
         config = None
-        if native_config_payload is None or native_references_payload is None:
+        if not db_unavailable and (native_config_payload is None or native_references_payload is None):
             with lock:
                 endpoint = conn.execute(
                     "SELECT endpoint_path, http_method, dimension_fields, kpi_fields FROM jin_endpoints WHERE endpoint_path = ?",
@@ -3835,12 +4007,31 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         mapping_overrides = _load_config_mapping_overrides(endpoint_path)
         if native_config_payload is not None:
             fallback_config = native_config_payload.get("config", {})
-            schema_contract = native_config_payload.get("schema_contract") or load_endpoint_metadata(endpoint_path)["schema_contract"]
+            if db_unavailable:
+                schema_contract = native_config_payload.get("schema_contract") or fallback_schema_contract
+            else:
+                try:
+                    schema_contract = native_config_payload.get("schema_contract") or load_endpoint_metadata(endpoint_path)["schema_contract"]
+                except HTTPException as exc:
+                    if exc.status_code == 503:
+                        schema_contract = native_config_payload.get("schema_contract") or fallback_schema_contract
+                    else:
+                        raise
             http_method = native_config_payload.get("http_method", record.method)
             dimension_fields = fallback_config.get("dimension_fields") or record.dimension_fields
             kpi_fields = fallback_config.get("kpi_fields") or record.kpi_fields
         else:
-            schema_contract = load_endpoint_metadata(endpoint_path)["schema_contract"]
+            if db_unavailable:
+                schema_contract = fallback_schema_contract
+            else:
+                try:
+                    schema_contract = load_endpoint_metadata(endpoint_path)["schema_contract"]
+                except HTTPException as exc:
+                    if exc.status_code == 503:
+                        schema_contract = fallback_schema_contract
+                        db_unavailable = True
+                    else:
+                        raise
             http_method = endpoint[1] if endpoint else record.method
             dimension_fields = json.loads(endpoint[2]) if endpoint and endpoint[2] else record.dimension_fields
             kpi_fields = json.loads(endpoint[3]) if endpoint and endpoint[3] else record.kpi_fields
@@ -3886,6 +4077,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             {
                 "endpoint_path": endpoint_path,
                 "http_method": http_method,
+                "response_model_present": response_model_present,
                 "dimension_fields": dimension_fields,
                 "kpi_fields": kpi_fields,
                 "fields": record.fields,
@@ -3904,7 +4096,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                         "tolerance_pct": row[3],
                         "upload_source": row[4],
                     }
-                    for row in references
+                    for row in (references or [])
                 ],
                 "recent_history": runtime_state.get("recent_history", []),
                 "trend_summary": build_trend_summary(
@@ -3926,6 +4118,23 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         require_auth(request, api=True)
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         record = endpoint_record_or_404(endpoint_path)
+        if record.response_model is None:
+            snapshot = _setup_snapshot(endpoint_path)
+            blockers = _setup_blockers(snapshot)
+            message = (
+                "Define a Pydantic response model first. Jin needs the model to discover fields before setup can be saved."
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "endpoint_path": endpoint_path,
+                    "error": message,
+                    "setup_blockers": blockers,
+                    "setup": snapshot,
+                    "next_step": "Add response_model to this FastAPI route, then come back to Configuration.",
+                },
+                status_code=409,
+            )
         raw_payload = await request.json()
         if not isinstance(raw_payload, dict):
             raw_payload = {}
@@ -4033,6 +4242,22 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         middleware._reset_cached_connection()
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         record = endpoint_record_or_404(endpoint_path)
+        setup_snapshot = _setup_snapshot(endpoint_path)
+        if not bool(setup_snapshot.get("response_model_present", True)):
+            message = (
+                "Define a Pydantic response model first. Jin needs the model to discover fields before setup can be saved."
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "endpoint_path": endpoint_path,
+                    "error": message,
+                    "setup_blockers": _setup_blockers(setup_snapshot),
+                    "setup": setup_snapshot,
+                    "next_step": "Add response_model to this FastAPI route, then come back to Configuration.",
+                },
+                status_code=409,
+            )
         payload = await request.json()
         if not isinstance(payload, dict):
             payload = {}
@@ -6022,7 +6247,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             ensure_runtime_upload_issues_loaded(path)
 
         # Upload-analysis issues are runtime-only today; merge them into the issues feed
-        # so operators can triage them in the same page.
+        # so users can review them in the same page.
         runtime_upload_rows = [
             item
             for item in runtime_enriched_anomalies(True)
@@ -6206,6 +6431,97 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 resolution_reason=resolution_reason,
                 until=until,
                 snooze_minutes=snooze_minutes,
+            )
+        )
+
+    @router.post("/api/anomaly/{anomaly_id}/ai-explain")
+    @router.post("/api/v2/anomaly/{anomaly_id}/ai-explain")
+    async def explain_anomaly_with_ai(anomaly_id: int, request: Request = None) -> JSONResponse:
+        require_auth(request, api=True)
+        if not middleware.feature_enabled("ai_chat"):
+            raise HTTPException(status_code=403, detail="AI explanations require a business entitlement")
+        require_duckdb()
+        middleware._ensure_python_schema()
+
+        conn, lock = connection_and_lock()
+        explanation = ""
+        with lock:
+            row = conn.execute(
+                """
+                SELECT
+                  a.id,
+                  a.endpoint_path,
+                  a.grain_key,
+                  a.kpi_field,
+                  a.actual_value,
+                  a.expected_value,
+                  a.pct_change,
+                  a.detection_method,
+                  CAST(a.detected_at AS VARCHAR),
+                  CAST(a.resolved_at AS VARCHAR),
+                  a.is_active,
+                  a.ai_explanation,
+                  s.incident_status,
+                  s.note,
+                  s.owner,
+                  s.resolution_reason,
+                  CAST(s.snoozed_until AS VARCHAR),
+                  CAST(s.suppressed_until AS VARCHAR),
+                  CASE
+                    WHEN ABS(a.pct_change) >= 75 THEN 'critical'
+                    WHEN ABS(a.pct_change) >= 30 THEN 'high'
+                    WHEN ABS(a.pct_change) >= 15 THEN 'medium'
+                    ELSE 'low'
+                  END AS severity,
+                  CASE a.detection_method
+                    WHEN 'reference' THEN 0.95
+                    WHEN 'statistical' THEN 0.88
+                    WHEN 'threshold' THEN 0.75
+                    ELSE 0.5
+                  END AS confidence
+                FROM jin_anomalies a
+                LEFT JOIN jin_incident_state s ON s.anomaly_id = a.id
+                WHERE a.id = ?
+                """,
+                [anomaly_id],
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Anomaly not found")
+            payload = anomaly_row_to_payload(conn, row)
+            explanation = anomaly_reason(payload)
+            try:
+                conn.execute(
+                    "UPDATE jin_anomalies SET ai_explanation = ? WHERE id = ?",
+                    [explanation, anomaly_id],
+                )
+                checkpoint_if_enabled(conn)
+            except Exception as exc:
+                record_router_error(
+                    "router.ai_explain",
+                    "Could not persist AI explanation back to DuckDB; returning the generated explanation only.",
+                    endpoint_path=str(payload.get("endpoint_path") or ""),
+                    detail=str(exc),
+                    hint="Check the local DuckDB anomaly table for schema drift or locks.",
+                )
+            runtime_state = middleware.incident_state.get(anomaly_id, {})
+            middleware.incident_state[anomaly_id] = {
+                **runtime_state,
+                "ai_explanation": explanation,
+                "why_flagged": explanation,
+            }
+            payload["ai_explanation"] = explanation
+            payload["why_flagged"] = explanation
+            payload["timeline"] = load_incident_events(conn, anomaly_id, payload) + list(runtime_state.get("timeline", []))
+            payload["timeline"].sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        return JSONResponse(
+            jsonable_encoder(
+                {
+                    "ok": True,
+                    "anomaly": payload,
+                    "ai_explanation": explanation,
+                    "why_flagged": explanation,
+                    "feature": "ai_chat",
+                }
             )
         )
 

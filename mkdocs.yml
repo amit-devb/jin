@@ -8,14 +8,10 @@ theme:
   favicon: assets/jin-mark.svg
 nav:
   - Overview: index.md
+  - Why Jin: vision.md
   - Getting Started: getting-started.md
-  - CLI Guide: cli.md
-  - Operator Guide: operator-guide.md
-  - Incident Workflow: incidents.md
   - Configuration Guide: configuration.md
-  - API v2 Migration: api-v2-migration.md
-  - Maintainer Demo Harness: example-app.md
+  - Incident Workflow: incidents.md
+  - CLI Guide: cli.md
   - Data Shape Guide: data-contract.md
-  - Changelog: changelog.md
-  - Release Guide: release.md
-  - First Release Gate: go_no_go_scoreboard.md
+  - Operations Guide: operations-guide.md

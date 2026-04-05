@@ -2,7 +2,7 @@ import json
 import os
 import time
 from pathlib import Path
-from jin.core.license import LicensePolicy, LicenseClient, MerchantProvider
+from jin.core.license import CommercialEntitlementProvider, CommercialEntitlementStore, LicenseClient, LicensePolicy, MerchantProvider
 
 def test_license_policy_defaults():
     policy = LicensePolicy()
@@ -27,6 +27,40 @@ def test_merchant_provider_mocking():
     bad_result = provider.verify_license("FREE-123", "test-site")
     assert bad_result["success"] is False
     assert bad_result["error"] == "Invalid license key"
+
+
+def test_commercial_entitlement_catalog_round_trip(tmp_path: Path):
+    catalog_path = tmp_path / "catalog.json"
+    store = CommercialEntitlementStore(catalog_path)
+    store.issue_license(
+        "BUS-ACME-ENT-001",
+        organization_id="acme",
+        account_id="acct-001",
+        policy={"tier": "business", "max_projects": None, "features": ["ai_chat"]},
+        site_id="site-123",
+        allowed_site_ids=["site-123"],
+        message="Commercial entitlement activated",
+    )
+
+    provider = CommercialEntitlementProvider(catalog_path=str(catalog_path))
+    assert provider.backend_mode() == "commercial_catalog"
+    result = provider.verify_license("BUS-ACME-ENT-001", "site-123")
+    assert result["success"] is True
+    assert result["source"] == "commercial_catalog"
+    assert result["policy"]["tier"] == "business"
+    assert result["organization_id"] == "acme"
+    assert result["account_id"] == "acct-001"
+
+    client = LicenseClient(
+        storage_path=str(tmp_path / "license.json"),
+        usage_path=str(tmp_path / "usage.json"),
+        org_registry_path=str(tmp_path / "orgs.json"),
+    )
+    client.provider = provider
+    activated = client.activate("BUS-ACME-ENT-001", "site-123")
+    assert activated["success"] is True
+    assert activated["source"] == "commercial_catalog"
+    assert client.has_commercial_catalog() is True
 
 def test_license_client_usage_tracking(tmp_path: Path):
     usage_file = tmp_path / "usage.json"

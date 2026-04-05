@@ -5,14 +5,18 @@ from urllib.parse import quote
 
 JIN_MARK_SVG = """<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Jin mark">
   <defs>
-    <linearGradient id="jin-ring" x1="14" y1="10" x2="50" y2="54" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#6EE7D8"/>
+    <linearGradient id="jin-mark-frame" x1="12" y1="11" x2="52" y2="53" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D9FDEB"/>
+      <stop offset="1" stop-color="#A7F3D0"/>
+    </linearGradient>
+    <linearGradient id="jin-mark-accent" x1="40.5" y1="18" x2="40.5" y2="42" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14B8A6"/>
       <stop offset="1" stop-color="#0F766E"/>
     </linearGradient>
   </defs>
-  <circle cx="32" cy="32" r="22" stroke="url(#jin-ring)" stroke-width="5"/>
-  <path d="M38 20V34.5C38 42.5081 31.5081 49 23.5 49C17.9386 49 13.1007 45.9051 10.6465 41.3659L15.7333 38.7724C17.1369 41.3631 19.8706 43 23 43C27.4183 43 31 39.4183 31 35V20H38Z" fill="#0F172A"/>
-  <path d="M45 26H49V30H45V26ZM45 34H49V38H45V34ZM45 42H49V46H45V42Z" fill="#6EE7D8"/>
+  <rect x="10.5" y="10.5" width="43" height="43" rx="14" fill="#FFFFFF" stroke="url(#jin-mark-frame)" stroke-width="1.5"/>
+  <path d="M37.5 18v14.8c0 8.7-6.8 15.7-15.2 15.7-4.9 0-9.3-2.2-12.3-5.7" stroke="#0F172A" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M41.7 22h2.6v14.5h-2.6z" fill="url(#jin-mark-accent)"/>
 </svg>"""
 
 

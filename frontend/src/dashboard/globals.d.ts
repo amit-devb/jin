@@ -12,12 +12,16 @@ declare global {
     changePage(kind: string, delta: number): void;
     saveIncidentNotes(id: number): Promise<void>;
     saveOperatorHandle(): void;
+    saveBrowserView(): void;
+    setApiBrowserColumnWidth(column: 'method' | 'status' | 'setup' | 'issues', width: number): void;
     applyResolutionPreset(value: string): void;
     applyNamedView(id: number): Promise<void>;
     deleteNamedView(id: number): void;
     setDefaultNamedView(id: number): void;
     showIncident(id: number): void;
     quickFixBaseline(id: number): void;
+    investigateWithAi(): void;
+    focusPortfolioProject(projectId: string): void;
     updateFieldRole(fieldName: string, role: string): void;
     setView(v: string): void;
   }

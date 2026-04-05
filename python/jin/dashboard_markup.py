@@ -3,7 +3,7 @@ from __future__ import annotations
 from jin.branding import JIN_MARK_SVG
 
 DASHBOARD_BODY = r"""
-<body data-theme="dark">
+<body data-theme="dark" data-maintainer="0">
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
@@ -20,7 +20,6 @@ DASHBOARD_BODY = r"""
           </div>
           <div class="brand-mark">
             <h1>Jin</h1>
-            <p>Operator Console</p>
           </div>
         </div>
       </div>
@@ -153,11 +152,11 @@ DASHBOARD_BODY = r"""
           <div class="panel-head">
             <div>
               <h3>PO Guide</h3>
-              <p>One place to set up monitoring, manage baseline targets, triage issues, and share report packs.</p>
+              <p>One place to set up monitoring, manage baseline targets, review issues, and share report packs.</p>
             </div>
           </div>
           <div class="playbook-quick-grid">
-            <div class="row-card playbook-quick-card">
+            <div class="row-card playbook-quick-card" id="playbook-maintainer-setup" style="display:none;">
               <strong>Start & Setup</strong>
               <div class="tiny muted">Register project settings and set baseline targets.</div>
               <div class="toolbar compact" style="margin-top:10px; flex-wrap:wrap;">
@@ -176,7 +175,7 @@ DASHBOARD_BODY = r"""
             </div>
             <div class="row-card playbook-quick-card">
               <strong>Share & Communicate</strong>
-              <div class="tiny muted">Generate a report pack after issues triage to communicate risk and next steps.</div>
+              <div class="tiny muted">Generate a report pack after issue review to communicate risk and next steps.</div>
               <div class="toolbar compact" style="margin-top:10px; flex-wrap:wrap;">
                 <button class="action secondary" id="po-action-report" type="button">Generate Report Pack</button>
               </div>
@@ -184,11 +183,11 @@ DASHBOARD_BODY = r"""
           </div>
         </div>
         <div class="panel" id="po-playbook-content"></div>
-        <div class="panel" id="playbook-core-workflow">
+        <div class="panel" id="playbook-core-workflow" style="display:none;">
           <div class="panel-head">
             <div>
               <h3>Core Workflow</h3>
-              <p>Follow this order: create project, configure run policy, execute checks, triage issues, then share outcomes.</p>
+              <p>Follow this order: create project, configure run policy, execute checks, review issues, then share outcomes.</p>
             </div>
           </div>
           <div class="row-card playbook-step-card" style="margin-bottom:14px;">
@@ -368,9 +367,10 @@ DASHBOARD_BODY = r"""
           <div class="empty">Pick one API above to start setup and monitoring.</div>
         </div>
 
-        <div id="api-workspace" style="display:none; gap:18px;">
+        <div id="api-workspace" class="api-workspace-panel" style="display:none; gap:18px;">
           <div class="panel">
             <div class="panel-head">
+              <button class="action secondary api-workspace-close" id="api-workspace-close" type="button" aria-label="Close API details" onclick="closeApiWorkspace()">×</button>
               <div>
                 <h3 id="api-title">API</h3>
                 <p id="api-subtitle">One endpoint, one place.</p>
@@ -670,7 +670,7 @@ DASHBOARD_BODY = r"""
           <div class="panel-head">
             <div>
               <h3>Issues</h3>
-              <p>Review what changed, decide if expected, then resolve or escalate.</p>
+              <p>Review project changes, confirm what is expected, and close out anything unresolved.</p>
             </div>
           </div>
           <div class="issues-toolbar-shell">
@@ -815,7 +815,7 @@ DASHBOARD_BODY = r"""
               <div id="settings-security" style="margin-top:12px;"></div>
             </div>
 
-            <div class="row-card">
+            <div class="row-card" id="settings-license-card" style="display:none;">
               <strong>Licensing</strong>
               <div id="settings-license" style="margin-top:12px;"></div>
             </div>

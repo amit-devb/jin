@@ -1,5 +1,7 @@
 # MVP Backlog
 
+The post-MVP product direction now lives in [docs/vision.md](docs/vision.md).
+
 Status values: `OPEN`, `IN_PROGRESS`, `DONE`, `BLOCKED`
 
 ## P0 Now
