@@ -81,7 +81,7 @@ test('MVP acceptance: configure, upload mismatch, review issue, resolve', async 
   await expect(monitoringProgress).toContainText(/Issues/i);
   await expect(monitoringProgress).toContainText(/Recommended next step/i);
   await expect(monitoringProgress).toContainText(/Confidence/i);
-  await monitoringProgress.getByRole('button', { name: 'Open Issues' }).first().click();
+  await monitoringProgress.getByRole('button', { name: /Review Issues|Open Issues/i }).first().click();
   await expect.poll(() => new URL(page.url()).searchParams.get('y_view')).toBe('incidents');
 
   const issueRows = page.locator('#incidents-list .issue-card');
@@ -116,7 +116,7 @@ test('MVP acceptance: configure, upload mismatch, review issue, resolve', async 
 
   await page.goto(`/jin?y_view=api&y_api=${REVENUE_API_ENCODED}&y_tab=history`);
   await expect(page.locator('#api-title')).toContainText(REVENUE_API);
-  await page.locator('#api-monitoring-progress').getByRole('button', { name: 'Open Issues' }).first().click();
+  await page.locator('#api-monitoring-progress').getByRole('button', { name: /Review Issues|Open Issues/i }).first().click();
   await expect(page.locator('#incident-status-select')).toHaveValue('');
   await expect
     .poll(async () => await page.locator('#incidents-list .issue-card').count(), { timeout: 30_000 })

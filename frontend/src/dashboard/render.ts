@@ -2861,15 +2861,13 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
         ? false
         : Boolean(field.time_candidate || String(field.suggested_role || '').toLowerCase() === 'time');
       const modelRoleHint = modelRoleHints.get(name) || null;
-      const role = name === timeField
-        ? 'time'
-        : (timeCandidate
-          ? 'time'
-          : (dims.has(name)
-            ? 'dimension'
-            : (kpis.has(name)
-              ? 'kpi'
-              : (modelRoleHint || (config.excluded_fields?.includes(name) ? 'exclude' : 'ignore')))));
+      const role = (config.excluded_fields?.includes(name) ? 'exclude' : null)
+        || (dims.has(name) ? 'dimension' : null)
+        || (kpis.has(name) ? 'kpi' : null)
+        || (name === timeField ? 'time' : null)
+        || (timeCandidate ? 'time' : null)
+        || modelRoleHint
+        || 'ignore';
       const suggested = typeof field === 'string' ? false : Boolean(field.suggested);
       return {
         name,

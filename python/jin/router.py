@@ -1029,6 +1029,29 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         }
         return {"ok": True, "id": anomaly_id, "status": action}
 
+    def force_anomaly_resolved(anomaly_id: int) -> None:
+        """Best-effort safety net to keep a resolved issue out of active feeds."""
+        if duckdb is not None:
+            conn, lock = connection_and_lock()
+            with lock:
+                try:
+                    conn.execute(
+                        "UPDATE jin_anomalies SET is_active = false, resolved_at = now() WHERE id = ?",
+                        [anomaly_id],
+                    )
+                except Exception as exc:
+                    record_router_error(
+                        "router.resolve_anomaly",
+                        "Could not force anomaly inactive after resolution; continuing with runtime-state cleanup.",
+                        detail=str(exc),
+                        hint="Check anomaly table/index consistency in the local DuckDB file.",
+                    )
+                checkpoint_if_enabled(conn)
+        for endpoint_state in middleware.runtime_state.values():
+            for item in endpoint_state.get("anomalies", []):
+                if item["id"] == anomaly_id:
+                    item["is_active"] = False
+
     def load_endpoint_metadata(endpoint_path: str) -> dict[str, object]:
         record = endpoint_record_or_404(endpoint_path)
         response_model_present = record.response_model is not None
@@ -3947,63 +3970,84 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         references = None
         config = None
         if not db_unavailable and (native_config_payload is None or native_references_payload is None):
-            with lock:
-                endpoint = conn.execute(
-                    "SELECT endpoint_path, http_method, dimension_fields, kpi_fields FROM jin_endpoints WHERE endpoint_path = ?",
-                    [endpoint_path],
-                ).fetchone()
-                references = conn.execute(
-                    """
-                    SELECT grain_key, kpi_field, expected_value, tolerance_pct, upload_source
-                    FROM jin_reference
-                    WHERE endpoint_path = ?
-                    ORDER BY uploaded_at DESC
-                    """,
-                    [endpoint_path],
-                ).fetchall()
-                try:
-                    config = conn.execute(
-                        """
-                        SELECT dimension_overrides, kpi_overrides, tolerance_pct, confirmed,
-                               tolerance_relaxed, tolerance_normal, tolerance_strict, active_tolerance,
-                               time_field, time_granularity,
-                               rows_path, time_end_field, time_profile, time_extraction_rule, time_format, time_pin
-                        FROM jin_config
-                        WHERE endpoint_path = ?
-                        """,
-                        [endpoint_path],
-                    ).fetchone()
-                except Exception:
-                    legacy = conn.execute(
-                        """
-                        SELECT dimension_overrides, kpi_overrides, tolerance_pct, confirmed, time_field, time_granularity
-                        FROM jin_config
-                        WHERE endpoint_path = ?
-                        """,
-                        [endpoint_path],
-                    ).fetchone()
-                    config = (
-                        (
-                            legacy[0],
-                            legacy[1],
-                            legacy[2],
-                            legacy[3],
-                            20.0,
-                            legacy[2] if legacy else middleware.global_threshold,
-                            5.0,
-                            "normal",
-                            legacy[4] if len(legacy) > 4 else None,
-                            legacy[5] if len(legacy) > 5 else "minute",
-                            None,
-                            None,
-                            "auto",
-                            "single",
-                            None,
-                            False,
+            try:
+                with lock:
+                    _ensure_fallback_storage_tables(conn)
+                    try:
+                        _ensure_config_mapping_columns(conn)
+                    except Exception as exc:
+                        record_router_error(
+                            "router.endpoint_detail",
+                            "Config mapping bootstrap skipped while reading a legacy DuckDB config row.",
+                            endpoint_path=endpoint_path,
+                            detail=str(exc),
+                            hint="Legacy config rows can still be read without the newer mapping columns.",
                         )
-                        if legacy
-                        else None
-                    )
+                    endpoint = conn.execute(
+                        "SELECT endpoint_path, http_method, dimension_fields, kpi_fields FROM jin_endpoints WHERE endpoint_path = ?",
+                        [endpoint_path],
+                    ).fetchone()
+                    references = conn.execute(
+                        """
+                        SELECT grain_key, kpi_field, expected_value, tolerance_pct, upload_source
+                        FROM jin_reference
+                        WHERE endpoint_path = ?
+                        ORDER BY uploaded_at DESC
+                        """,
+                        [endpoint_path],
+                    ).fetchall()
+                    try:
+                        config = conn.execute(
+                            """
+                            SELECT dimension_overrides, kpi_overrides, tolerance_pct, confirmed,
+                                   tolerance_relaxed, tolerance_normal, tolerance_strict, active_tolerance,
+                                   time_field, time_granularity,
+                                   rows_path, time_end_field, time_profile, time_extraction_rule, time_format, time_pin
+                            FROM jin_config
+                            WHERE endpoint_path = ?
+                            """,
+                            [endpoint_path],
+                        ).fetchone()
+                    except Exception:
+                        legacy = conn.execute(
+                            """
+                            SELECT dimension_overrides, kpi_overrides, tolerance_pct, confirmed, time_field, time_granularity
+                            FROM jin_config
+                            WHERE endpoint_path = ?
+                            """,
+                            [endpoint_path],
+                        ).fetchone()
+                        config = (
+                            (
+                                legacy[0],
+                                legacy[1],
+                                legacy[2],
+                                legacy[3],
+                                20.0,
+                                legacy[2] if legacy else middleware.global_threshold,
+                                5.0,
+                                "normal",
+                                legacy[4] if len(legacy) > 4 else None,
+                                legacy[5] if len(legacy) > 5 else "minute",
+                                None,
+                                None,
+                                "auto",
+                                "single",
+                                None,
+                                False,
+                            )
+                            if legacy
+                            else None
+                        )
+            except Exception as exc:
+                record_router_error(
+                    "router.endpoint_detail",
+                    "Falling back to runtime endpoint detail after legacy DuckDB reads failed.",
+                    endpoint_path=endpoint_path,
+                    detail=str(exc),
+                    hint="Check the local DuckDB anomaly table for schema drift or locks.",
+                )
+                db_unavailable = True
         mapping_overrides = _load_config_mapping_overrides(endpoint_path)
         if native_config_payload is not None:
             fallback_config = native_config_payload.get("config", {})
@@ -6283,7 +6327,20 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             )
             history_rows = merged
 
-        active = [item for item in history_rows if item.get("status") != "resolved"]
+        resolved_ids = {
+            int(anomaly_id)
+            for anomaly_id, incident in middleware.incident_state.items()
+            if str(incident.get("incident_status") or incident.get("status") or "").lower() == "resolved"
+        }
+        for endpoint_state in middleware.runtime_state.values():
+            for item in endpoint_state.get("anomalies", []):
+                if not item.get("is_active"):
+                    resolved_ids.add(int(item.get("id") or 0))
+        active = [
+            item
+            for item in history_rows
+            if item.get("status") != "resolved" and int(item.get("id") or 0) not in resolved_ids
+        ]
         return JSONResponse(
             jsonable_encoder({"anomalies": active, "history": history_rows[:50]})
         )
@@ -6415,10 +6472,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                     )
                 )
                 if action == "resolved":
-                    for endpoint_state in middleware.runtime_state.values():
-                        for item in endpoint_state.get("anomalies", []):
-                            if item["id"] == anomaly_id:
-                                item["is_active"] = False
+                    force_anomaly_resolved(anomaly_id)
                 return JSONResponse(result)
             except Exception: # pragma: no cover
                 pass
@@ -6582,10 +6636,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         if issues_update is not None:
             try:
                 result = json.loads(call_native(issues_update, middleware.db_path, anomaly_id, "resolved", None, None, None, None))
-                for endpoint_state in middleware.runtime_state.values():
-                    for item in endpoint_state.get("anomalies", []):
-                        if item["id"] == anomaly_id:
-                            item["is_active"] = False
+                force_anomaly_resolved(anomaly_id)
                 return JSONResponse(result)
             except Exception: # pragma: no cover
                 pass

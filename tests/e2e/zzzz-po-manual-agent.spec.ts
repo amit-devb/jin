@@ -203,7 +203,7 @@ test('PO manual agent flow: configure, upload wrong/right data, review, report, 
 
   const revenueMonitoring = page.locator('#api-monitoring-progress');
   await expect(revenueMonitoring).toContainText(/Upload Analysis Found Mismatches/i);
-  await revenueMonitoring.getByRole('button', { name: 'Open Issues' }).first().click();
+  await revenueMonitoring.getByRole('button', { name: /Review Issues|Open Issues/i }).first().click();
   await expect.poll(() => new URL(page.url()).searchParams.get('y_view')).toBe('incidents');
   await expect
     .poll(async () => await page.locator('#incidents-list .issue-card').count(), { timeout: 30_000 })
