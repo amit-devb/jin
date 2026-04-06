@@ -4611,7 +4611,7 @@ function blockInPoMode(message: string): boolean {
   detail.setup_config.dimension_fields = [...dims];
   detail.setup_config.kpi_fields = [...kpis];
   detail.setup_config.excluded_fields = [...excluded];
-  renderFieldRoles(detail.fields, detail.setup_config, detail.metrics);
+  renderApiDetail(detail);
   if (role === 'time' || !detail.setup_config.time_field) (window as any).refreshTimePreview();
 };
 
@@ -4626,7 +4626,7 @@ function blockInPoMode(message: string): boolean {
   };
   const detail = selectedApiDetail();
   if (!detail) return;
-  renderFieldRoles(detail.fields, detail.setup_config || detail.config || {}, detail.metrics);
+  renderApiDetail(detail);
 };
 
 (window as any).updateExtractionRule = function updateExtractionRule(val: string) {

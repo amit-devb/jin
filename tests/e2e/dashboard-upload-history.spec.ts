@@ -115,7 +115,7 @@ test('summary shows a clear 5-step checklist with one next action after upload',
   await expect(starter).toContainText('Monitor checks');
   await expect(starter).toContainText('Review issues');
   await expect(starter).toContainText('Generate report');
-  await expect(starter.getByRole('button', { name: /Open Monitor|Open Issues|Open Reports/i }).first()).toBeVisible();
+  await expect(starter.getByRole('button', { name: /Open Monitor|Review Issues|Open Issues|Open Reports/i }).first()).toBeVisible();
 });
 
 test('configuration keeps roles and time controls editable when PO mode is off', async ({ page }) => {

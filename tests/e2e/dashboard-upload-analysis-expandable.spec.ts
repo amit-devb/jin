@@ -93,10 +93,10 @@ test('upload analysis keeps large result set readable with expandable flagged ro
   const monitoringProgress = page.locator('#api-monitoring-progress');
   await expect(monitoringProgress).toBeVisible();
   await expect(monitoringProgress.getByText('Upload Analysis Found Mismatches')).toBeVisible();
-  await expect(monitoringProgress.getByText(/Upload mismatches \(\d+\)/)).toBeVisible();
+  await expect(monitoringProgress.getByText(/Needs attention \(\d+\)/i)).toBeVisible();
   await expect(monitoringProgress.getByText(/Recommended next step/i)).toBeVisible();
   await expect(monitoringProgress.getByText('Priority', { exact: true })).toBeVisible();
-  await expect(monitoringProgress.getByRole('button', { name: 'Open Issues' })).toBeVisible();
+  await expect(monitoringProgress.getByRole('button', { name: 'Review Issues' })).toBeVisible();
 
   const moreDetails = monitoringProgress.locator('details.upload-analysis-more-runs').first();
   const moreSummary = moreDetails.locator(':scope > summary');
