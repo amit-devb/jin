@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "jin-monitor"
-version = "0.1.1"
+version = "0.1.2"
 description = "Rust-first data quality monitoring middleware for FastAPI"
 readme = "README.md"
 license = { file = "LICENSE" }
