@@ -285,7 +285,7 @@ def test_auth_and_comparison_branches(app, tmp_path: Path, monkeypatch: pytest.M
     assert middleware._comparison_pct_change(0, 0) == 0.0
 
     assert "could not complete" in middleware._comparison_reason("amount", 0, 0, "error", None)
-    assert "did not find an uploaded baseline" in middleware._comparison_reason(
+    assert "did not find an uploaded reference" in middleware._comparison_reason(
         "amount",
         0,
         0,
@@ -294,8 +294,8 @@ def test_auth_and_comparison_branches(app, tmp_path: Path, monkeypatch: pytest.M
     )
     assert "did not include amount" in middleware._comparison_reason("amount", None, 100, "missing_kpi", None)
     assert "within the allowed" in middleware._comparison_reason("amount", 101, 100, "match", 1.0, 5.0)
-    assert "did not match the uploaded baseline" in middleware._comparison_reason("amount", "x", "y", "mismatch", None)
-    assert "different than the baseline" in middleware._comparison_reason("amount", 100, 100, "mismatch", 0.0)
+    assert "did not match the uploaded reference" in middleware._comparison_reason("amount", "x", "y", "mismatch", None)
+    assert "different than the reference" in middleware._comparison_reason("amount", 100, 100, "mismatch", 0.0)
 
     monkeypatch.setattr(middleware_module, "init_db", None)
     middleware._initialized = False

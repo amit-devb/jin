@@ -190,6 +190,19 @@ def test_classify_model_ignores_non_model_collections() -> None:
     assert any(field["name"] == "pairs" and field["kind"] == "ignore" for field in fields)
 
 
+def test_classify_model_supports_top_level_model_collections() -> None:
+    fields, dims, kpis, array_path = classify_model(list[LineItem])
+    assert "sku" in dims
+    assert "quantity" in kpis
+    assert array_path is None
+    assert any(field["name"] == "quantity" and field["annotation"] == "int" for field in fields)
+
+
+def test_classify_model_ignores_unsupported_top_level_types() -> None:
+    assert classify_model(list) == ([], [], [], None)
+    assert classify_model(dict[str, str]) == ([], [], [], None)
+
+
 def test_json_safe_example_and_flatten_payload_cover_edge_types() -> None:
     class Obj:
         def __str__(self) -> str:

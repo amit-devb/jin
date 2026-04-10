@@ -8,6 +8,32 @@ export UV_CACHE_DIR="${TMP_ROOT}/uv-cache"
 PYTHON_BIN="${JIN_SMOKE_PYTHON_BIN:-python3}"
 SYSTEM_PYTHON_BIN="${JIN_SMOKE_SYSTEM_PYTHON_BIN:-python3}"
 export PYO3_USE_ABI3_FORWARD_COMPATIBILITY="${PYO3_USE_ABI3_FORWARD_COMPATIBILITY:-1}"
+JIN_INSTALL_SLO_SECONDS="${JIN_INSTALL_SLO_SECONDS:-30}"
+JIN_ENFORCE_INSTALL_SLO="${JIN_ENFORCE_INSTALL_SLO:-false}"
+JIN_SMOKE_INSTALL_SOURCE="${JIN_SMOKE_INSTALL_SOURCE:-auto}" # auto|wheel|source|pypi
+JIN_SMOKE_WHEEL_GLOB="${JIN_SMOKE_WHEEL_GLOB:-${ROOT_DIR}/dist/*.whl}"
+JIN_SMOKE_PYPI_PACKAGE="${JIN_SMOKE_PYPI_PACKAGE:-jin-monitor}"
+
+detect_os_label() {
+  local uname_value
+  uname_value="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  case "${uname_value}" in
+    mingw*|msys*|cygwin*)
+      echo "windows"
+      ;;
+    darwin*)
+      echo "macos"
+      ;;
+    linux*)
+      echo "linux"
+      ;;
+    *)
+      echo "${uname_value}"
+      ;;
+  esac
+}
+
+OS_LABEL="${JIN_SMOKE_OS_LABEL:-$(detect_os_label)}"
 
 resolve_executable() {
   local candidate="$1"
@@ -34,6 +60,129 @@ log() {
 
 has_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+is_truthy() {
+  case "${1,,}" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+now_seconds() {
+  "${PYTHON_BIN}" -c 'import time; print(f"{time.time():.6f}")'
+}
+
+elapsed_seconds() {
+  local start_seconds="$1"
+  local end_seconds="$2"
+  "${PYTHON_BIN}" -c "start=float('${start_seconds}'); end=float('${end_seconds}'); print(f'{max(end-start, 0.0):.3f}')"
+}
+
+pick_wheel() {
+  # Prefer an already-built wheel so install doesn't need Rust.
+  local candidate
+  candidate="$(ls -1 ${JIN_SMOKE_WHEEL_GLOB} 2>/dev/null | head -n 1 || true)"
+  if [[ -n "${candidate}" ]] && [[ -f "${candidate}" ]]; then
+    echo "${candidate}"
+    return 0
+  fi
+  return 1
+}
+
+resolve_install_source() {
+  local resolved="${JIN_SMOKE_INSTALL_SOURCE}"
+  if [[ "${resolved}" == "auto" ]]; then
+    if pick_wheel >/dev/null 2>&1; then
+      resolved="wheel"
+    else
+      resolved="source"
+    fi
+  fi
+  echo "${resolved}"
+}
+
+pip_install_target() {
+  local source
+  source="$(resolve_install_source)"
+  if [[ "${source}" == "wheel" ]]; then
+    pick_wheel
+    return 0
+  fi
+  if [[ "${source}" == "pypi" ]]; then
+    echo "${JIN_SMOKE_PYPI_PACKAGE}"
+    return 0
+  fi
+  echo "${ROOT_DIR}"
+}
+
+pip_install_args() {
+  local source
+  source="$(resolve_install_source)"
+  if [[ "${source}" == "pypi" ]]; then
+    echo "--only-binary=:all:"
+    return 0
+  fi
+  echo ""
+}
+
+within_slo() {
+  local measured_seconds="$1"
+  local slo_seconds="$2"
+  "${PYTHON_BIN}" -c "import sys; sys.exit(0 if float('${measured_seconds}') <= float('${slo_seconds}') else 1)"
+}
+
+append_install_summary() {
+  local method="$1"
+  local install_seconds="$2"
+  local status="$3"
+
+  if [[ -z "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    return 0
+  fi
+
+  if ! grep -q '^| OS | Method | Install (s) | SLO (s) | Status |$' "${GITHUB_STEP_SUMMARY}" 2>/dev/null; then
+    {
+      echo "| OS | Method | Install (s) | SLO (s) | Status |"
+      echo "|---|---|---:|---:|---|"
+    } >> "${GITHUB_STEP_SUMMARY}"
+  fi
+
+  echo "| ${OS_LABEL} | ${method} | ${install_seconds} | ${JIN_INSTALL_SLO_SECONDS} | ${status} |" >> "${GITHUB_STEP_SUMMARY}"
+}
+
+report_install_metric() {
+  local method="$1"
+  local install_seconds="$2"
+  local status="pass"
+  if ! within_slo "${install_seconds}" "${JIN_INSTALL_SLO_SECONDS}"; then
+    status="breach"
+  fi
+
+  log "install metric: os=${OS_LABEL} method=${method} install_seconds=${install_seconds} slo_seconds=${JIN_INSTALL_SLO_SECONDS} status=${status}"
+  append_install_summary "${method}" "${install_seconds}" "${status}"
+
+  if [[ "${status}" == "breach" ]] && is_truthy "${JIN_ENFORCE_INSTALL_SLO}"; then
+    echo "Install SLO breached for method '${method}' on '${OS_LABEL}': ${install_seconds}s > ${JIN_INSTALL_SLO_SECONDS}s" >&2
+    return 1
+  fi
+}
+
+run_install_with_metrics() {
+  local method="$1"
+  shift
+  local started_at
+  local finished_at
+  local install_seconds
+  started_at="$(now_seconds)"
+  "$@"
+  finished_at="$(now_seconds)"
+  install_seconds="$(elapsed_seconds "${started_at}" "${finished_at}")"
+  report_install_metric "${method}" "${install_seconds}"
 }
 
 has_pipx() {
@@ -71,6 +220,7 @@ poetry_exec() {
 run_cli_checks() {
   local jin_bin="$1"
   local runtime_dir="$2"
+  jin_bin="$(resolve_cli_executable "${jin_bin}")"
   mkdir -p "${runtime_dir}"
   (
     cd "${runtime_dir}"
@@ -83,13 +233,72 @@ run_cli_checks() {
   )
 }
 
+resolve_cli_executable() {
+  local base="$1"
+  if [[ -x "${base}" ]]; then
+    echo "${base}"
+    return 0
+  fi
+  if [[ -x "${base}.exe" ]]; then
+    echo "${base}.exe"
+    return 0
+  fi
+  echo "${base}"
+}
+
+venv_scripts_dir() {
+  local venv_dir="$1"
+  if [[ -d "${venv_dir}/Scripts" ]]; then
+    echo "${venv_dir}/Scripts"
+    return 0
+  fi
+  echo "${venv_dir}/bin"
+}
+
+venv_python_bin() {
+  local scripts_dir
+  scripts_dir="$(venv_scripts_dir "$1")"
+  if [[ -x "${scripts_dir}/python" ]]; then
+    echo "${scripts_dir}/python"
+    return 0
+  fi
+  if [[ -x "${scripts_dir}/python.exe" ]]; then
+    echo "${scripts_dir}/python.exe"
+    return 0
+  fi
+  echo "${scripts_dir}/python"
+}
+
+venv_jin_bin() {
+  local scripts_dir
+  scripts_dir="$(venv_scripts_dir "$1")"
+  if [[ -x "${scripts_dir}/jin" ]]; then
+    echo "${scripts_dir}/jin"
+    return 0
+  fi
+  if [[ -x "${scripts_dir}/jin.exe" ]]; then
+    echo "${scripts_dir}/jin.exe"
+    return 0
+  fi
+  echo "${scripts_dir}/jin"
+}
+
 run_pip_smoke() {
   log "Running pip install smoke test"
   local venv_dir="${TMP_ROOT}/pip-venv"
+  local python_bin
+  local jin_bin
+  local target
+  local extra_args
   "${PYTHON_BIN}" -m venv "${venv_dir}"
-  "${venv_dir}/bin/python" -m pip install --upgrade pip >/dev/null
-  PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 "${venv_dir}/bin/python" -m pip install "${ROOT_DIR}" >/dev/null
-  run_cli_checks "${venv_dir}/bin/jin" "${TMP_ROOT}/pip-runtime"
+  python_bin="$(venv_python_bin "${venv_dir}")"
+  jin_bin="$(venv_jin_bin "${venv_dir}")"
+  "${python_bin}" -m pip install --upgrade pip >/dev/null
+  target="$(pip_install_target)"
+  extra_args="$(pip_install_args)"
+  # shellcheck disable=SC2086
+  run_install_with_metrics "pip" "${python_bin}" -m pip install ${extra_args} "${target}"
+  run_cli_checks "${jin_bin}" "${TMP_ROOT}/pip-runtime"
 }
 
 run_uv_smoke() {
@@ -103,9 +312,18 @@ run_uv_smoke() {
   fi
   log "Running uv install smoke test"
   local venv_dir="${TMP_ROOT}/uv-venv"
+  local python_bin
+  local jin_bin
+  local target
+  local extra_args
   uv venv "${venv_dir}" --python "${PYTHON_BIN}" >/dev/null
-  PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv pip install --python "${venv_dir}/bin/python" "${ROOT_DIR}" >/dev/null
-  run_cli_checks "${venv_dir}/bin/jin" "${TMP_ROOT}/uv-runtime"
+  python_bin="$(venv_python_bin "${venv_dir}")"
+  jin_bin="$(venv_jin_bin "${venv_dir}")"
+  target="$(pip_install_target)"
+  extra_args="$(pip_install_args)"
+  # shellcheck disable=SC2086
+  run_install_with_metrics "uv" uv pip install --python "${python_bin}" ${extra_args} "${target}"
+  run_cli_checks "${jin_bin}" "${TMP_ROOT}/uv-runtime"
 }
 
 run_pipx_smoke() {
@@ -121,7 +339,15 @@ run_pipx_smoke() {
   export PIPX_HOME="${TMP_ROOT}/pipx-home"
   export PIPX_BIN_DIR="${TMP_ROOT}/pipx-bin"
   mkdir -p "${PIPX_HOME}" "${PIPX_BIN_DIR}"
-  PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 pipx_exec install --force --python "${PYTHON_BIN}" "${ROOT_DIR}" >/dev/null
+  local target
+  local source
+  source="$(resolve_install_source)"
+  target="$(pip_install_target)"
+  if [[ "${source}" == "pypi" ]]; then
+    run_install_with_metrics "pipx" pipx_exec install --force --python "${PYTHON_BIN}" --pip-args="--only-binary=:all:" "${target}"
+  else
+    run_install_with_metrics "pipx" pipx_exec install --force --python "${PYTHON_BIN}" "${target}"
+  fi
   run_cli_checks "${PIPX_BIN_DIR}/jin" "${TMP_ROOT}/pipx-runtime"
   pipx_exec uninstall jin >/dev/null || true
 }
@@ -137,7 +363,28 @@ run_poetry_smoke() {
   fi
   log "Running poetry install smoke test"
   local project_dir="${TMP_ROOT}/poetry-project"
+  local source
+  local target
+  source="$(resolve_install_source)"
+  target="$(pip_install_target)"
   mkdir -p "${project_dir}"
+  if [[ "${source}" == "wheel" ]]; then
+    cat > "${project_dir}/pyproject.toml" <<EOF
+[tool.poetry]
+name = "jin-smoke-project"
+version = "0.1.0"
+description = "Smoke project for jin installs"
+authors = ["ci@example.com"]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<4.0"
+jin-monitor = { file = "${target}" }
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+EOF
+  else
   cat > "${project_dir}/pyproject.toml" <<EOF
 [tool.poetry]
 name = "jin-smoke-project"
@@ -147,17 +394,18 @@ authors = ["ci@example.com"]
 
 [tool.poetry.dependencies]
 python = ">=3.9,<4.0"
-jin-monitor = { path = "${ROOT_DIR}", develop = false }
+jin-monitor = { path = "${target}", develop = false }
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 EOF
+  fi
   (
     cd "${project_dir}"
     poetry_exec config virtualenvs.in-project true --local >/dev/null
     poetry_exec env use "${PYTHON_BIN}" >/dev/null
-    PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 poetry_exec install --no-interaction --no-root >/dev/null
+    run_install_with_metrics "poetry" poetry_exec install --no-interaction --no-root
     JIN_PROJECT_NAME="smoke-project" JIN_DB_PATH="${project_dir}/smoke.duckdb" poetry_exec run jin --help >/dev/null
     JIN_PROJECT_NAME="smoke-project" JIN_DB_PATH="${project_dir}/smoke.duckdb" poetry_exec run jin status --format json >/dev/null
   )

@@ -3,13 +3,21 @@ import { expect, test, type Page } from '@playwright/test';
 const REVENUE_API = '/api/revenue/{retailer}';
 const REVENUE_API_ENCODED = encodeURIComponent(REVENUE_API);
 
+function utf8Bytes(text: string): Uint8Array {
+  // Minimal UTF-8 encoder so this spec does not require Node's Buffer types.
+  const encoded = unescape(encodeURIComponent(text));
+  const out = new Uint8Array(encoded.length);
+  for (let i = 0; i < encoded.length; i += 1) out[i] = encoded.charCodeAt(i);
+  return out;
+}
+
 function isoDateDaysAgo(daysAgo: number): string {
   const value = new Date();
   value.setDate(value.getDate() - daysAgo);
   return value.toISOString().slice(0, 10);
 }
 
-function buildLargeMismatchCsv(): Buffer {
+function buildLargeMismatchCsv(): Uint8Array {
   const header = [
     'endpoint',
     'dimension_fields',
@@ -44,7 +52,7 @@ function buildLargeMismatchCsv(): Buffer {
     });
   });
 
-  return Buffer.from(`${rows.join('\n')}\n`, 'utf-8');
+  return utf8Bytes(`${rows.join('\n')}\n`);
 }
 
 async function uploadLargeMismatchReference(page: Page): Promise<void> {
@@ -73,7 +81,7 @@ async function uploadLargeMismatchReference(page: Page): Promise<void> {
   await page.setInputFiles('#upload-file', {
     name: 'large-mismatch.csv',
     mimeType: 'text/csv',
-    buffer: buildLargeMismatchCsv(),
+    buffer: buildLargeMismatchCsv() as any,
   });
   await page.click('#preview-upload-button');
   await expect(page.locator('#upload-preview-step')).toBeVisible();

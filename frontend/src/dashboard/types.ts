@@ -586,6 +586,16 @@ export type DashboardState = {
   poMode?: boolean;
   configFocusExpandedByApi?: Record<string, boolean>;
   activeUploadJobByApi?: Record<string, string>;
+  mappingNoSamplesToastByApi?: Record<string, boolean>;
+  // Populated during "Check file" to prevent confirming uploads when setup isn't ready.
+  uploadConfirmGateByApi?: Record<
+    string,
+    {
+      ready: boolean;
+      reason?: string;
+      hint?: string;
+    }
+  >;
   apiDataState?: 'fresh' | 'stale' | 'unavailable' | 'auth_required' | 'error';
   apiDataMessage?: string | null;
   apiDataUpdatedAt?: string | null;

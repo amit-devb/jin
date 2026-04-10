@@ -23,14 +23,14 @@ develop: build-frontend
 	$(UV_CACHE) $(PYO3_ENV) $(PYTHONPATH_VAR) .venv/bin/maturin develop
 
 test-python: build-frontend
-	$(PYTHONPATH_VAR) .venv/bin/pytest
+	$(PYTHONPATH_VAR) .venv/bin/python -m pytest
 
 test-rust:
 	$(PYO3_ENV) cargo test
 
 coverage-python: build-frontend
-	$(PYTHONPATH_VAR) .venv/bin/coverage run --rcfile=.coveragerc -m pytest
-	$(PYTHONPATH_VAR) .venv/bin/coverage report --rcfile=.coveragerc -m
+	$(PYTHONPATH_VAR) .venv/bin/python -m coverage run --rcfile=.coveragerc -m pytest
+	$(PYTHONPATH_VAR) .venv/bin/python -m coverage report --rcfile=.coveragerc -m
 
 coverage-rust:
 	$(PYO3_ENV) cargo llvm-cov --ignore-filename-regex '(/.cargo/registry|target/)' --summary-only

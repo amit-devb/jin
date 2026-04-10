@@ -20,8 +20,14 @@ def test_pyproject_uses_unique_pypi_distribution_name() -> None:
     assert pyproject["project"]["name"] == "jin-monitor"
 
 
-def test_pyproject_includes_python_packages_for_maturin() -> None:
+def test_pyproject_uses_fast_python_build_backend() -> None:
     pyproject = load_pyproject()
-    maturin = pyproject["tool"]["maturin"]
-    python_packages = set(maturin["python-packages"])
-    assert {"jin", "jin_core"}.issubset(python_packages)
+    build_system = pyproject["build-system"]
+    assert build_system["build-backend"] == "maturin"
+
+
+def test_pyproject_includes_python_packages_for_wheel_build() -> None:
+    pyproject = load_pyproject()
+    maturin_config = pyproject["tool"]["maturin"]
+    packages = set(maturin_config.get("python-packages") or [])
+    assert {"jin", "jin_core"}.issubset(packages)

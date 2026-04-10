@@ -6,6 +6,7 @@ Jin is a small FastAPI product for monitoring API response quality and reviewing
 
 - [Why Jin](vision.md)
 - [Getting Started](getting-started.md)
+- [Architecture Blueprint](architecture.md)
 - [Configuration Guide](configuration.md)
 - [Data Shape Guide](data-contract.md)
 - [Incident Workflow](incidents.md)
@@ -14,4 +15,4 @@ Jin is a small FastAPI product for monitoring API response quality and reviewing
 
 ## One-Line Summary
 
-Install Jin, add the middleware, define your response model, upload baselines, then watch the dashboard at `/jin`.
+Install Jin, add the middleware, configure your grains (Segment/Metric/Time), upload references, then watch the dashboard at `/jin`.

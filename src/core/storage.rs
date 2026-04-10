@@ -1,4 +1,5 @@
 use crate::core::grain::canonical_grain_key;
+#[cfg(test)]
 use crate::core::json::numeric_value;
 use crate::core::types::AnomalyResult;
 use duckdb::{params, Connection, OptionalExt};
@@ -379,8 +380,7 @@ fn normalize_active_tolerance(value: &str) -> String {
 
 fn anomaly_explanation(anomaly: &AnomalyResult) -> String {
  format!(
- "{} anomaly for {}: actual {:.4} vs expected {:.4} ({:.2}% change, {} severity)",
- anomaly.method,
+ "Reconciliation mismatch for {}: actual {:.4} vs expected {:.4} ({:.2}% difference, {} severity).",
  anomaly.kpi_field,
  anomaly.actual,
  anomaly.expected,
@@ -391,10 +391,10 @@ fn anomaly_explanation(anomaly: &AnomalyResult) -> String {
 
 fn baseline_label(method: &str) -> &'static str {
  match method {
- "reference" => "Reference baseline",
- "threshold" => "Previous healthy observation",
- "statistical" => "Historical mean baseline",
- _ => "Baseline",
+ "reconciliation" | "reference" => "Uploaded reference",
+ "threshold" => "Previous observation (legacy)",
+ "statistical" => "Historical average (legacy)",
+ _ => "Reference",
  }
 }
 
@@ -405,14 +405,20 @@ fn anomaly_reason(
  expected_value: f64,
  pct_change: f64,
 ) -> String {
+ if method == "reconciliation" || method == "reference" {
  format!(
- "{method} anomaly on {kpi_field}: actual {actual_value} versus expected {expected_value} ({pct_change:.2}% change)."
+ "Reconciliation mismatch on {kpi_field}: API returned {actual_value} while uploaded reference expected {expected_value} ({pct_change:.2}% difference)."
  )
+ } else {
+ format!(
+ "Reconciliation mismatch on {kpi_field}: API returned {actual_value} while expected was {expected_value} ({pct_change:.2}% difference)."
+ )
+ }
 }
 
 fn change_summary(actual_value: f64, expected_value: f64, pct_change: f64) -> String {
  format!(
- "Changed from {:.4} to {:.4} ({:.2}% versus baseline).",
+ "Expected {:.4}, got {:.4} ({:.2}% difference).",
  expected_value, actual_value, pct_change
  )
 }
@@ -471,7 +477,7 @@ fn anomaly_severity_label(pct_change: f64) -> &'static str {
 
 fn anomaly_confidence_value(method: &str) -> f64 {
  match method {
- "reference" => 0.95,
+ "reconciliation" | "reference" => 0.95,
  "statistical" => 0.88,
  "threshold" => 0.75,
  _ => 0.5,
@@ -1008,6 +1014,7 @@ pub fn checkpoint(conn: &Connection) -> Result<(), duckdb::Error> {
 }
 
 
+#[cfg(test)]
 pub fn read_kpi_history(
  conn: &Connection,
  grain_key: &str,
@@ -1016,6 +1023,7 @@ pub fn read_kpi_history(
  read_kpi_history_window(conn, grain_key, kpi_field, usize::MAX)
 }
 
+#[cfg(test)]
 pub fn read_kpi_history_window(
  conn: &Connection,
  grain_key: &str,
@@ -1347,6 +1355,7 @@ pub fn status_payload(conn: &Connection) -> Result<String, String> {
  "fields": schema_contract.get("fields").cloned().unwrap_or(json!([])),
  "grain_count": row.get::<usize, i64>(5)?,
  "active_anomalies": row.get::<usize, i64>(6)?,
+ "active_mismatches": row.get::<usize, i64>(6)?,
  "last_checked": row.get::<usize, Option<String>>(7)?,
  "tolerance_pct": row.get::<usize, f64>(8)?,
  "confirmed": row.get::<usize, bool>(9)?,
@@ -1359,6 +1368,13 @@ pub fn status_payload(conn: &Connection) -> Result<String, String> {
  "unconfirmed"
  } else {
  "healthy"
+ },
+ "reconciliation_status": if row.get::<usize, i64>(6)? > 0 {
+ "mismatch"
+ } else if row.get::<usize, i64>(5)? > 0 {
+ "match"
+ } else {
+ "missing_reference"
  },
  "current_kpis": json!([]),
  }))
@@ -1415,25 +1431,46 @@ pub fn status_payload(conn: &Connection) -> Result<String, String> {
  if let Some(actual) = kpi_json.get(kpi_field).and_then(Value::as_f64) {
  let active_anomaly = active_anomaly_by_kpi.get(kpi_field);
  let reference = reference_by_kpi.get(kpi_field).copied();
- let (expected_value, pct_change, severity, confidence) =
+ let (expected_value, pct_change, severity, confidence, reconciliation_status, tolerance_pct) =
  if let Some((expected, change, method)) = active_anomaly {
  (
  json!(*expected),
  json!(*change),
  anomaly_severity_label(*change),
  anomaly_confidence_value(method),
+ "mismatch",
+ reference.map(|(_, tolerance)| tolerance),
  )
- } else if let Some((expected, _)) = reference {
- (json!(expected), json!(0.0), "info", 0.0)
+ } else if let Some((expected, tolerance)) = reference {
+ (json!(expected), json!(0.0), "info", 0.0, "match", Some(tolerance))
  } else {
- (Value::Null, json!(0.0), "info", 0.0)
+ (Value::Null, json!(0.0), "info", 0.0, "missing_reference", None)
+ };
+ let delta = expected_value.as_f64().map(|expected| actual - expected);
+ let reason = match reconciliation_status {
+ "mismatch" => format!(
+ "API value for {} does not match the uploaded reference for this grain.",
+ kpi_field
+ ),
+ "match" => format!(
+ "API value for {} matches the uploaded reference for this grain.",
+ kpi_field
+ ),
+ _ => format!(
+ "No uploaded reference found for {} on this grain, so reconciliation could not run.",
+ kpi_field
+ ),
  };
  current_kpis.push(json!({
  "grain_key": latest.get("grain_key").cloned().unwrap_or(Value::Null),
  "kpi_field": kpi_field,
  "actual_value": actual,
  "expected_value": expected_value,
+ "delta": delta,
  "pct_change": pct_change,
+ "tolerance_pct": tolerance_pct,
+ "reconciliation_status": reconciliation_status,
+ "reason": reason,
  "severity": severity,
  "confidence": confidence,
  }));
@@ -1455,6 +1492,7 @@ pub fn status_payload(conn: &Connection) -> Result<String, String> {
  "total_endpoints": endpoints.len(),
  "healthy": endpoints.iter().filter(|item| item["status"] == "healthy").count(),
  "anomalies": endpoints.iter().map(|item| item["active_anomalies"].as_i64().unwrap_or(0)).sum::<i64>(),
+ "mismatches": endpoints.iter().map(|item| item["active_anomalies"].as_i64().unwrap_or(0)).sum::<i64>(),
  "unconfirmed": endpoints.iter().filter(|item| item["confirmed"] == false).count(),
  });
 
@@ -1612,7 +1650,9 @@ pub fn endpoint_detail_payload_with_limits(
  "snoozed_until": snoozed_until,
  "suppressed_until": suppressed_until,
  "status": status,
+ "reconciliation_status": "mismatch",
  "baseline_label": baseline_label(&row.get::<usize, String>(6)?),
+ "expected_source_label": baseline_label(&row.get::<usize, String>(6)?),
  "why_flagged": anomaly_reason(
  &row.get::<usize, String>(6)?,
  &row.get::<usize, String>(2)?,
@@ -1620,8 +1660,18 @@ pub fn endpoint_detail_payload_with_limits(
  expected_value,
  pct_change,
  ),
+ "why_mismatch": anomaly_reason(
+ &row.get::<usize, String>(6)?,
+ &row.get::<usize, String>(2)?,
+ actual_value,
+ expected_value,
+ pct_change,
+ ),
  "baseline_used": expected_value,
+ "delta": actual_value - expected_value,
+ "delta_pct": pct_change,
  "change_since_last_healthy_run": change_summary(actual_value, expected_value, pct_change),
+ "difference_summary": change_summary(actual_value, expected_value, pct_change),
  "impact": impact,
  }))
  })
@@ -1708,25 +1758,46 @@ pub fn endpoint_detail_payload_with_limits(
  if let Some(actual) = kpi_json.get(kpi_field).and_then(Value::as_f64) {
  let active_anomaly = active_anomaly_by_kpi.get(kpi_field);
  let reference = reference_by_kpi.get(kpi_field).copied();
- let (expected_value, pct_change, severity, confidence) =
+ let (expected_value, pct_change, severity, confidence, reconciliation_status, tolerance_pct) =
  if let Some((expected, change, method)) = active_anomaly {
  (
  json!(*expected),
  json!(*change),
  anomaly_severity_label(*change),
  anomaly_confidence_value(method),
+ "mismatch",
+ reference.map(|(_, tolerance)| tolerance),
  )
- } else if let Some((expected, _)) = reference {
- (json!(expected), json!(0.0), "info", 0.0)
+ } else if let Some((expected, tolerance)) = reference {
+ (json!(expected), json!(0.0), "info", 0.0, "match", Some(tolerance))
  } else {
- (Value::Null, json!(0.0), "info", 0.0)
+ (Value::Null, json!(0.0), "info", 0.0, "missing_reference", None)
+ };
+ let delta = expected_value.as_f64().map(|expected| actual - expected);
+ let reason = match reconciliation_status {
+ "mismatch" => format!(
+ "API value for {} does not match the uploaded reference for this grain.",
+ kpi_field
+ ),
+ "match" => format!(
+ "API value for {} matches the uploaded reference for this grain.",
+ kpi_field
+ ),
+ _ => format!(
+ "No uploaded reference found for {} on this grain, so reconciliation could not run.",
+ kpi_field
+ ),
  };
  items.push(json!({
  "grain_key": grain_key,
  "kpi_field": kpi_field,
  "actual_value": actual,
  "expected_value": expected_value,
+ "delta": delta,
  "pct_change": pct_change,
+ "tolerance_pct": tolerance_pct,
+ "reconciliation_status": reconciliation_status,
+ "reason": reason,
  "severity": severity,
  "confidence": confidence,
  }));
@@ -1823,7 +1894,9 @@ pub fn active_anomalies_payload(conn: &Connection) -> Result<String, String> {
  "snoozed_until": snoozed_until,
  "suppressed_until": suppressed_until,
  "status": status,
+ "reconciliation_status": "mismatch",
  "baseline_label": baseline_label(&row.get::<usize, String>(7)?),
+ "expected_source_label": baseline_label(&row.get::<usize, String>(7)?),
  "why_flagged": anomaly_reason(
  &row.get::<usize, String>(7)?,
  &row.get::<usize, String>(3)?,
@@ -1831,8 +1904,18 @@ pub fn active_anomalies_payload(conn: &Connection) -> Result<String, String> {
  expected_value,
  pct_change,
  ),
+ "why_mismatch": anomaly_reason(
+ &row.get::<usize, String>(7)?,
+ &row.get::<usize, String>(3)?,
+ actual_value,
+ expected_value,
+ pct_change,
+ ),
  "baseline_used": expected_value,
+ "delta": actual_value - expected_value,
+ "delta_pct": pct_change,
  "change_since_last_healthy_run": change_summary(actual_value, expected_value, pct_change),
+ "difference_summary": change_summary(actual_value, expected_value, pct_change),
  "impact": impact,
  }))
  })
@@ -2604,7 +2687,7 @@ mod internal_tests {
  impact: 0.0,
  });
 
- assert!(explanation.contains("reference anomaly"));
+ assert!(explanation.contains("Reconciliation mismatch"));
  assert!(explanation.contains("value"));
  assert!(explanation.contains("45.00%"));
  assert!(explanation.contains("high severity"));

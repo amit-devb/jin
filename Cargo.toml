@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = []
-extension-module = ["pyo3/extension-module"]
+extension-module = ["pyo3/extension-module", "pyo3/abi3-py39"]
 
 [lib]
 name = "jin_core"

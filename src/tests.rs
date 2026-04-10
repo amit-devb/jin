@@ -145,13 +145,17 @@ fn process_observation_threshold_flow_is_end_to_end() {
  let status_json: Value = serde_json::from_str(&status).expect("parse status");
 
  assert_eq!(first_json["status"], "learning");
- assert_eq!(second_json["status"], "anomaly");
- assert_eq!(second_json["anomalies"][0]["method"], "threshold");
+ assert_eq!(second_json["status"], "learning");
+ assert_eq!(second_json["anomalies"], json!([]));
+ assert_eq!(
+ second_json["reconciliation"]["missing_reference"],
+ 1
+ );
  assert_eq!(
  second_json["grain_key"],
  "/api/sales|period=YTD|retailer=amazon"
  );
- assert_eq!(status_json["endpoints"][0]["active_anomalies"], 1);
+ assert_eq!(status_json["endpoints"][0]["active_anomalies"], 0);
 
  let _ = fs::remove_file(db_path);
 }
@@ -196,7 +200,11 @@ fn process_observation_uses_reference_thresholds() {
  let result_json: Value = serde_json::from_str(&result).expect("parse result");
 
  assert_eq!(result_json["status"], "anomaly");
- assert_eq!(result_json["anomalies"][0]["method"], "reference");
+ assert_eq!(result_json["anomalies"][0]["method"], "reconciliation");
+ assert_eq!(
+ result_json["comparisons"][0]["reconciliation_status"],
+ "mismatch"
+ );
 
  let _ = fs::remove_file(db_path);
 }
@@ -256,7 +264,7 @@ fn process_observation_uses_reference_even_when_uploaded_grain_has_technical_met
  let result_json: Value = serde_json::from_str(&result).expect("parse result");
 
  assert_eq!(result_json["status"], "anomaly");
- assert_eq!(result_json["anomalies"][0]["method"], "reference");
+ assert_eq!(result_json["anomalies"][0]["method"], "reconciliation");
 
  let _ = fs::remove_file(db_path);
 }
@@ -487,6 +495,15 @@ fn native_payloads_include_schema_and_trend_summary() {
  "ui",
  )
  .expect("save reference");
+ let _ = process_observation(
+ "/api/native-schema",
+ "GET",
+ &request,
+ &json!({"retailer": "amazon", "period": "YTD", "value": 130.0}).to_string(),
+ &config,
+ &db_path,
+ )
+ .expect("reconciliation mismatch");
 
  let status_json: Value =
  serde_json::from_str(&get_status(&db_path).expect("status")).expect("parse status");
@@ -499,10 +516,14 @@ fn native_payloads_include_schema_and_trend_summary() {
  assert_eq!(endpoint["schema_contract"]["kpi_fields"], json!(["value"]));
  assert_eq!(endpoint["fields"][0]["name"], "retailer");
  assert_eq!(endpoint["current_kpis"][0]["kpi_field"], "value");
- assert_eq!(endpoint["current_kpis"][0]["expected_value"], 100.0);
- assert_eq!(endpoint["current_kpis"][0]["pct_change"], 20.0);
- assert_eq!(endpoint["current_kpis"][0]["severity"], "medium");
- assert_eq!(endpoint["current_kpis"][0]["confidence"], 0.75);
+ assert_eq!(endpoint["current_kpis"][0]["expected_value"], 115.0);
+ let endpoint_pct_change = endpoint["current_kpis"][0]["pct_change"]
+ .as_f64()
+ .expect("endpoint pct change");
+ assert!((endpoint_pct_change - 13.043478).abs() < 0.001);
+ assert_eq!(endpoint["current_kpis"][0]["reconciliation_status"], "mismatch");
+ assert_eq!(endpoint["current_kpis"][0]["severity"], "low");
+ assert_eq!(endpoint["current_kpis"][0]["confidence"], 0.95);
 
  let detail_json: Value =
  serde_json::from_str(&get_endpoint_detail(&db_path, "/api/native-schema").expect("detail"))
@@ -512,11 +533,15 @@ fn native_payloads_include_schema_and_trend_summary() {
  json!(["retailer", "period"])
  );
  assert_eq!(detail_json["trend_summary"][0]["kpi_field"], "value");
- assert_eq!(detail_json["trend_summary"][0]["samples"], 2);
- assert_eq!(detail_json["current_kpis"][0]["expected_value"], 100.0);
- assert_eq!(detail_json["current_kpis"][0]["pct_change"], 20.0);
- assert_eq!(detail_json["anomalies"][0]["severity"], "medium");
- assert_eq!(detail_json["anomalies"][0]["confidence"], 0.75);
+ assert_eq!(detail_json["trend_summary"][0]["samples"], 3);
+ assert_eq!(detail_json["current_kpis"][0]["expected_value"], 115.0);
+ let detail_pct_change = detail_json["current_kpis"][0]["pct_change"]
+ .as_f64()
+ .expect("detail pct change");
+ assert!((detail_pct_change - 13.043478).abs() < 0.001);
+ assert_eq!(detail_json["current_kpis"][0]["reconciliation_status"], "mismatch");
+ assert_eq!(detail_json["anomalies"][0]["severity"], "low");
+ assert_eq!(detail_json["anomalies"][0]["confidence"], 0.95);
 
  let _ = fs::remove_file(db_path);
 }
@@ -624,7 +649,7 @@ fn save_and_load_endpoint_config_roundtrips_migrated_mapping_columns() {
 }
 
 #[test]
-fn active_tolerance_modes_change_native_threshold_behavior() {
+fn reconciliation_requires_uploaded_reference_to_flag_mismatch() {
  let db_path = temp_db_path("tolerance-modes");
  init_db(&db_path).expect("db init");
 
@@ -671,7 +696,29 @@ fn active_tolerance_modes_change_native_threshold_behavior() {
  )
  .expect("relaxed result");
  let relaxed_json: Value = serde_json::from_str(&relaxed).expect("parse relaxed");
- assert_eq!(relaxed_json["status"], "healthy");
+ assert_eq!(relaxed_json["status"], "learning");
+ assert_eq!(relaxed_json["anomalies"], json!([]));
+
+ let conn = Connection::open(&db_path).expect("open db");
+ init_schema(&conn).expect("schema");
+ conn.execute(
+ "
+ INSERT INTO jin_reference (
+ id, endpoint_path, grain_key, kpi_field, expected_value, tolerance_pct, upload_source
+ ) VALUES (?, ?, ?, ?, ?, ?, ?)
+ ",
+ params![
+ next_id(&conn, "jin_reference").expect("next id"),
+ "/api/tolerance-strict",
+ "/api/tolerance-strict|period=YTD|retailer=amazon",
+ "value",
+ 100.0_f64,
+ 5.0_f64,
+ "test"
+ ],
+ )
+ .expect("insert reference");
+ checkpoint(&conn).expect("checkpoint");
 
  let _strict_baseline = process_observation(
  "/api/tolerance-strict",
@@ -697,7 +744,7 @@ fn active_tolerance_modes_change_native_threshold_behavior() {
  .as_array()
  .expect("anomaly list")
  .iter()
- .any(|item| item["method"] == "threshold"));
+ .any(|item| item["method"] == "reconciliation"));
 
  let _ = fs::remove_file(db_path);
 }
@@ -706,6 +753,27 @@ fn active_tolerance_modes_change_native_threshold_behavior() {
 fn active_anomalies_can_be_listed_and_resolved() {
  let db_path = temp_db_path("resolve-anomaly");
  init_db(&db_path).expect("db init");
+ let conn = Connection::open(&db_path).expect("open db");
+ init_schema(&conn).expect("schema");
+ conn.execute(
+ "
+ INSERT INTO jin_reference (
+ id, endpoint_path, grain_key, kpi_field, expected_value, tolerance_pct, upload_source
+ ) VALUES (?, ?, ?, ?, ?, ?, ?)
+ ",
+ params![
+ next_id(&conn, "jin_reference").expect("next id"),
+ "/api/sales",
+ "/api/sales|period=YTD|retailer=amazon",
+ "value",
+ 100.0_f64,
+ 5.0_f64,
+ "test"
+ ],
+ )
+ .expect("insert reference");
+ checkpoint(&conn).expect("checkpoint");
+ drop(conn);
 
  let _ = process_observation(
  "/api/sales",
@@ -828,6 +896,27 @@ fn upserting_same_native_anomaly_updates_existing_row() {
 fn anomaly_recovery_auto_resolves_matching_native_alerts() {
  let db_path = temp_db_path("auto-resolve");
  init_db(&db_path).expect("db init");
+ let conn = Connection::open(&db_path).expect("open db");
+ init_schema(&conn).expect("schema");
+ conn.execute(
+ "
+ INSERT INTO jin_reference (
+ id, endpoint_path, grain_key, kpi_field, expected_value, tolerance_pct, upload_source
+ ) VALUES (?, ?, ?, ?, ?, ?, ?)
+ ",
+ params![
+ next_id(&conn, "jin_reference").expect("next id"),
+ "/api/sales",
+ "/api/sales|period=YTD|retailer=amazon",
+ "value",
+ 100.0_f64,
+ 5.0_f64,
+ "test"
+ ],
+ )
+ .expect("insert reference");
+ checkpoint(&conn).expect("checkpoint");
+ drop(conn);
 
  let _ = process_observation(
  "/api/sales",
@@ -851,7 +940,7 @@ fn anomaly_recovery_auto_resolves_matching_native_alerts() {
  "/api/sales",
  "GET",
  &base_request(),
- &json!({"retailer": "amazon", "period": "YTD", "value": 152.0}).to_string(),
+ &json!({"retailer": "amazon", "period": "YTD", "value": 102.0}).to_string(),
  &base_config(),
  &db_path,
  )
@@ -1290,6 +1379,28 @@ fn process_observation_covers_ignored_healthy_statistical_and_error_paths() {
  )
  .expect("seed stats");
  }
+ let conn = Connection::open(&db_path).expect("open db");
+ init_schema(&conn).expect("schema");
+ conn.execute(
+ "
+ INSERT INTO jin_reference (
+ id, endpoint_path, grain_key, kpi_field, expected_value, tolerance_pct, upload_source
+ ) VALUES (?, ?, ?, ?, ?, ?, ?)
+ ",
+ params![
+ next_id(&conn, "jin_reference").expect("next id"),
+ "/api/stats",
+ "/api/stats|period=YTD|retailer=amazon",
+ "value",
+ 100.0_f64,
+ 10.0_f64,
+ "test"
+ ],
+ )
+ .expect("insert reference");
+ checkpoint(&conn).expect("checkpoint");
+ drop(conn);
+
  let healthy = process_observation(
  "/api/stats",
  "GET",
@@ -1317,7 +1428,7 @@ fn process_observation_covers_ignored_healthy_statistical_and_error_paths() {
  .as_array()
  .expect("anomaly array")
  .iter()
- .any(|item| item["method"] == "statistical"));
+ .any(|item| item["method"] == "reconciliation"));
 
  let invalid_request = process_observation(
  "/api/bad",
@@ -1387,7 +1498,7 @@ fn process_observation_handles_zero_baselines() {
  )
  .expect("baseline");
  let baseline_json: Value = serde_json::from_str(&baseline).expect("parse baseline");
- assert_eq!(baseline_json["status"], "learning");
+ assert_eq!(baseline_json["status"], "healthy");
 
  let anomaly = process_observation(
  "/api/zero",
@@ -1401,27 +1512,7 @@ fn process_observation_handles_zero_baselines() {
  let anomaly_json: Value = serde_json::from_str(&anomaly).expect("parse anomaly");
  assert_eq!(anomaly_json["anomalies"][0]["pct_change"], 100.0);
 
- let _zero_again = process_observation(
- "/api/zero-steady",
- "GET",
- &base_request(),
- &json!({"retailer": "amazon", "period": "YTD", "value": 0.0}).to_string(),
- &base_config(),
- &db_path,
- )
- .expect("zero baseline");
- let zero_again = process_observation(
- "/api/zero-steady",
- "GET",
- &base_request(),
- &json!({"retailer": "amazon", "period": "YTD", "value": 0.0}).to_string(),
- &base_config(),
- &db_path,
- )
- .expect("zero again");
- let zero_again_json: Value = serde_json::from_str(&zero_again).expect("parse zero again");
-
- assert_eq!(zero_again_json["status"], "healthy");
+ drop(conn);
 
  let _ = fs::remove_file(db_path);
 }
@@ -1519,7 +1610,7 @@ fn reference_anomalies_take_precedence_and_resolve_lower_priority_signals() {
  result_json["anomalies"].as_array().map(|items| items.len()),
  Some(1)
  );
- assert_eq!(result_json["anomalies"][0]["method"], "reference");
+ assert_eq!(result_json["anomalies"][0]["method"], "reconciliation");
  assert_eq!(
  anomalies_json["anomalies"]
  .as_array()
@@ -1528,9 +1619,9 @@ fn reference_anomalies_take_precedence_and_resolve_lower_priority_signals() {
  );
  assert_eq!(
  anomalies_json["anomalies"][0]["detection_method"],
- "reference"
+ "reconciliation"
  );
- assert!(explanation.contains("reference anomaly"));
+ assert!(explanation.contains("Reconciliation mismatch"));
 
  let _ = fs::remove_file(db_path);
 }
@@ -1759,6 +1850,27 @@ fn storage_payloads_cover_empty_and_error_cases() {
 fn detail_and_active_payloads_include_ai_explanation() {
  let db_path = temp_db_path("payload-explanation");
  init_db(&db_path).expect("db init");
+ let conn = Connection::open(&db_path).expect("open db");
+ init_schema(&conn).expect("schema");
+ conn.execute(
+ "
+ INSERT INTO jin_reference (
+ id, endpoint_path, grain_key, kpi_field, expected_value, tolerance_pct, upload_source
+ ) VALUES (?, ?, ?, ?, ?, ?, ?)
+ ",
+ params![
+ next_id(&conn, "jin_reference").expect("next id"),
+ "/api/explain",
+ "/api/explain|period=YTD|retailer=amazon",
+ "value",
+ 100.0_f64,
+ 5.0_f64,
+ "test"
+ ],
+ )
+ .expect("insert reference");
+ checkpoint(&conn).expect("checkpoint");
+ drop(conn);
 
  let _ = process_observation(
  "/api/explain",
@@ -1788,13 +1900,13 @@ fn detail_and_active_payloads_include_ai_explanation() {
  assert!(detail_json["anomalies"][0]["ai_explanation"]
  .as_str()
  .expect("detail explanation")
- .contains("anomaly"));
+ .contains("Reconciliation mismatch"));
  assert_eq!(detail_json["anomalies"][0]["severity"], "high");
  assert!(active_json["anomalies"][0]["ai_explanation"]
  .as_str()
  .expect("active explanation")
- .contains("anomaly"));
- assert_eq!(active_json["anomalies"][0]["confidence"], 0.75);
+ .contains("Reconciliation mismatch"));
+ assert_eq!(active_json["anomalies"][0]["confidence"], 0.95);
 
  let _ = fs::remove_file(db_path);
 }

@@ -152,25 +152,25 @@ DASHBOARD_BODY = r"""
           <div class="panel-head">
             <div>
               <h3>PO Guide</h3>
-              <p>One place to set up monitoring, manage baseline targets, review issues, and share report packs.</p>
+              <p>One place to set up monitoring, manage targets, review issues, and share report packs.</p>
             </div>
           </div>
           <div class="playbook-quick-grid">
             <div class="row-card playbook-quick-card" id="playbook-maintainer-setup" style="display:none;">
               <strong>Start & Setup</strong>
-              <div class="tiny muted">Register project settings and set baseline targets.</div>
+              <div class="tiny muted">Register project settings and set targets.</div>
               <div class="toolbar compact" style="margin-top:10px; flex-wrap:wrap;">
                 <button class="action" id="po-action-workflow" type="button">Open Setup Workflow</button>
-                <button class="action secondary" id="po-action-validation" type="button">Open Baseline Setup</button>
+                <button class="action secondary" id="po-action-validation" type="button">Open Target Setup</button>
               </div>
             </div>
             <div class="row-card playbook-quick-card">
               <strong>Monitor & Refresh</strong>
-              <div class="tiny muted">Run checks, inspect health, and refresh baseline targets when behavior is expected.</div>
+              <div class="tiny muted">Run checks, inspect health, and refresh targets when behavior is expected.</div>
               <div class="toolbar compact" style="margin-top:10px; flex-wrap:wrap;">
                 <button class="action secondary" id="po-action-checks" type="button">Run Checks Now</button>
                 <button class="action secondary" id="po-action-health" type="button">Run Health Check</button>
-                <button class="action secondary" id="po-action-baseline" type="button">Refresh Baseline Targets</button>
+                <button class="action secondary" id="po-action-baseline" type="button">Refresh Targets</button>
               </div>
             </div>
             <div class="row-card playbook-quick-card">
@@ -328,7 +328,7 @@ DASHBOARD_BODY = r"""
             <strong>4) Run checks and share outcomes</strong>
             <div class="toolbar" style="margin-top:10px; flex-wrap:wrap;">
               <button class="action" id="project-run-bundle-button" type="button">Run Checks Now</button>
-              <button class="action secondary" id="project-baseline-promote-button" type="button">Refresh Baseline Targets</button>
+              <button class="action secondary" id="project-baseline-promote-button" type="button">Refresh Targets</button>
               <button class="action secondary" id="project-health-check-button" type="button">Run Health Check</button>
               <button class="action secondary" id="project-monitor-refresh-button" type="button">Refresh Portfolio Health</button>
               <button class="action secondary" id="project-report-digest-button" type="button">Generate Report Pack</button>
@@ -347,7 +347,7 @@ DASHBOARD_BODY = r"""
           <div class="panel-head">
             <div>
               <h3>APIs</h3>
-              <p>Pick one API, then follow Configure -> Baselines -> Checks.</p>
+              <p>Pick one API, then follow Configure -> Uploads -> Checks.</p>
             </div>
           </div>
           <div class="api-browser-toolbar">
@@ -429,13 +429,13 @@ DASHBOARD_BODY = r"""
                 </div>
 
                 <details class="advanced-section" id="upload-magic-container" style="margin-bottom:16px;">
-                  <summary class="advanced-toggle">Optional: use recent API history as baseline</summary>
+                  <summary class="advanced-toggle">Optional: seed targets from recent API history</summary>
                   <div class="advanced-body">
                     <div class="tiny muted" style="margin-bottom:10px;">
                       Use this only if the last 24 hours represent normal behavior for this API.
                     </div>
                     <button class="action secondary" id="magic-baseline-button" type="button" onclick="magicBaseline()">
-                      Use recent averages as baseline
+                      Seed targets from recent averages
                     </button>
                   </div>
                 </details>
@@ -599,7 +599,7 @@ DASHBOARD_BODY = r"""
                   <!-- Navigation Footer (Step 1) -->
                   <div class="api-section-footer" id="config-footer" style="margin-top:40px; border-top:1px solid var(--line); padding-top:24px; display:none; justify-content:center;">
                     <button class="action" type="button" onclick="switchApiTab('uploads')" style="padding:12px 24px;">
-                      Next: Set Baselines
+                      Next: Upload Targets
                     </button>
                   </div>
                 </div>
@@ -610,7 +610,7 @@ DASHBOARD_BODY = r"""
               <div class="panel-head">
                 <div>
                   <h3>Checks</h3>
-                  <p>Review each run and decide: set baseline, investigate, or continue monitoring.</p>
+                  <p>Review each run and decide: investigate, update targets, or continue monitoring.</p>
                 </div>
                 <div class="toolbar">
                   <button class="action secondary" id="export-runs" type="button">Export</button>
@@ -627,7 +627,7 @@ DASHBOARD_BODY = r"""
                 <!-- Navigation Footer for Monitor (Step 3) -->
                 <div class="api-section-footer" id="summary-footer" style="margin-top:40px; border-top:1px solid var(--line); padding-top:24px; display:none; justify-content:center; gap:16px;">
                   <button class="action secondary" type="button" onclick="switchApiTab('uploads')" style="padding:12px 24px;">
-                    ← Back to Baselines
+                    ← Back to Targets
                   </button>
                   <button class="action secondary" type="button" onclick="switchApiTab('configuration')" style="padding:12px 24px;">
                     Edit Config

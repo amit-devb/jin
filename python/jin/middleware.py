@@ -7,7 +7,7 @@ import hmac
 import hashlib
 import inspect
 import string
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from pathlib import Path
@@ -76,6 +76,8 @@ class EndpointRecord:
     metrics: list[Any]
     watch_config: dict[str, Any]
     array_field_path: str | None = None
+    discovery_status: str = "ready"
+    discovery_reason_codes: list[str] = field(default_factory=list)
 
 
 class JinMiddleware(BaseHTTPMiddleware):
@@ -119,6 +121,8 @@ class JinMiddleware(BaseHTTPMiddleware):
         self._native_db_lock = RLock()
         self._router_mounted = False
         self._initialized = False
+        self._middleware_created_perf = time.perf_counter()
+        self._startup_completed_perf: float | None = None
         self.scheduler = JinScheduler(retry_backoff_seconds=300, retry_backoff_cap_seconds=3600)
         self.scheduler_leader_lock_enabled = os.getenv("JIN_SCHEDULER_LEADER_LOCK", "true").lower() not in {
             "0",
@@ -813,6 +817,7 @@ class JinMiddleware(BaseHTTPMiddleware):
 
     def dashboard_context(self) -> dict[str, Any]:
         meta = self.get_license_meta()
+        diagnostics = self.runtime_diagnostics()
         return {
             "name": self.project_name,
             "root": self.project_root,
@@ -833,6 +838,12 @@ class JinMiddleware(BaseHTTPMiddleware):
             "auth_uses_default_credentials": self.auth_username == "operator"
             and (self.auth_password == "change-me" or not self.auth_password_hash),
             "deployment_model": "client_infra_embedded",
+            "runtime_mode": diagnostics.get("runtime_mode"),
+            "native_available": diagnostics.get("native_available"),
+            "native_missing_features": diagnostics.get("native_missing_features"),
+            "startup_completed": diagnostics.get("startup_completed"),
+            "startup_seconds": diagnostics.get("startup_seconds"),
+            "discovery": diagnostics.get("discovery"),
             "recent_errors": list(self.recent_errors),
         }
 
@@ -2043,7 +2054,14 @@ class JinMiddleware(BaseHTTPMiddleware):
             path = route.path
             if path.startswith("/jin"):
                 continue
-            fields, dims, kpis, array_field_path = classify_model(route.response_model)
+            response_model = self._resolve_response_model(route)
+            fields, dims, kpis, array_field_path = classify_model(response_model)
+            discovery_status, discovery_reason_codes = self._discovery_profile(
+                response_model=response_model,
+                fields=fields,
+                dimension_fields=dims,
+                kpi_fields=kpis,
+            )
             methods = sorted(route.methods or {"GET"})
             method = methods[0] if methods else "GET"
             metrics_override = getattr(route.endpoint, "_jin_metrics", [])
@@ -2072,7 +2090,7 @@ class JinMiddleware(BaseHTTPMiddleware):
             self.endpoint_registry[path] = EndpointRecord(
                 method=method,
                 path=path,
-                response_model=route.response_model,
+                response_model=response_model,
                 endpoint_callable=route.endpoint,
                 fields=fields,
                 dimension_fields=dims,
@@ -2080,8 +2098,61 @@ class JinMiddleware(BaseHTTPMiddleware):
                 array_field_path=array_field_path,
                 metrics=metrics_override,
                 watch_config=merged_watch_config,
+                discovery_status=discovery_status,
+                discovery_reason_codes=discovery_reason_codes,
             )
         self._sync_endpoint_registry_to_db()
+
+    @staticmethod
+    def _resolve_response_model(route: APIRoute) -> Any:
+        response_model = getattr(route, "response_model", None)
+        if response_model is not None:
+            return response_model
+        try:
+            signature = inspect.signature(route.endpoint)
+        except Exception:
+            return None
+        if signature.return_annotation is inspect.Signature.empty:
+            return None
+        candidate = signature.return_annotation
+        try:
+            fields, _dims, _kpis, _array = classify_model(candidate)
+        except Exception:
+            return None
+        non_technical_fields = [
+            field
+            for field in fields
+            if str(field.get("name") or "").strip() not in TECHNICAL_METADATA_FIELDS
+        ]
+        if not non_technical_fields:
+            return None
+        return candidate
+
+    @staticmethod
+    def _discovery_profile(
+        *,
+        response_model: Any,
+        fields: list[dict[str, Any]],
+        dimension_fields: list[str],
+        kpi_fields: list[str],
+    ) -> tuple[str, list[str]]:
+        reason_codes: list[str] = []
+        if response_model is None:
+            reason_codes.append("missing_response_model")
+        if response_model is not None and not fields:
+            reason_codes.append("unsupported_response_model_shape")
+        if not dimension_fields:
+            reason_codes.append("no_dimension_fields_detected")
+        if not kpi_fields:
+            reason_codes.append("no_kpi_fields_detected")
+
+        # Jin can still operate without a response_model by inferring fields from runtime
+        # observations and letting operators confirm Segment/Metric/Time mappings.
+        if "missing_response_model" in reason_codes or "unsupported_response_model_shape" in reason_codes:
+            return "runtime_infer", reason_codes
+        if reason_codes:
+            return "partial", reason_codes
+        return "ready", reason_codes
 
     def _sync_endpoint_registry_to_db(self) -> None:
         if sync_registry is None:  # pragma: no cover
@@ -2097,6 +2168,8 @@ class JinMiddleware(BaseHTTPMiddleware):
                     "http_method": record.method,
                     "dimension_fields": record.dimension_fields,
                     "kpi_fields": record.kpi_fields,
+                    "discovery_status": record.discovery_status,
+                    "discovery_reason_codes": record.discovery_reason_codes,
                     "schema_contract": build_schema_contract(
                         EndpointModelInfo(
                             method=record.method,
@@ -2133,6 +2206,48 @@ class JinMiddleware(BaseHTTPMiddleware):
         self._ensure_ingestion_workers()
         self.scheduler.start()
         self._initialized = True
+        if self._startup_completed_perf is None:
+            self._startup_completed_perf = time.perf_counter()
+
+    def runtime_diagnostics(self) -> dict[str, Any]:
+        native_available = all(fn is not None for fn in (init_db, process_observation, get_status))
+        runtime_mode = "native" if native_available else "python_fallback"
+        startup_seconds = None
+        if self._startup_completed_perf is not None:
+            startup_seconds = max(self._startup_completed_perf - self._middleware_created_perf, 0.0)
+
+        discovery_summary: dict[str, int] = {
+            "ready": 0,
+            "partial": 0,
+            "runtime_infer": 0,
+            "total": len(self.endpoint_registry),
+        }
+        reason_counts: dict[str, int] = {}
+        for endpoint in self.endpoint_registry.values():
+            status = str(endpoint.discovery_status or "partial")
+            discovery_summary[status] = int(discovery_summary.get(status, 0)) + 1
+            for code in endpoint.discovery_reason_codes:
+                reason_counts[code] = int(reason_counts.get(code, 0)) + 1
+
+        return {
+            "runtime_mode": runtime_mode,
+            "native_available": native_available,
+            "native_missing_features": [
+                name
+                for name, fn in (
+                    ("init_db", init_db),
+                    ("process_observation", process_observation),
+                    ("get_status", get_status),
+                )
+                if fn is None
+            ],
+            "startup_completed": self._startup_completed_perf is not None,
+            "startup_seconds": round(startup_seconds, 4) if startup_seconds is not None else None,
+            "discovery": {
+                "summary": discovery_summary,
+                "reason_counts": reason_counts,
+            },
+        }
 
     def _ensure_ingestion_workers(self) -> None:
         if not self.async_ingest_enabled:
@@ -2302,7 +2417,7 @@ class JinMiddleware(BaseHTTPMiddleware):
             route = request.scope.get("route")
             endpoint_path = route.path if isinstance(route, APIRoute) else request.url.path
             record = self.endpoint_registry.get(endpoint_path)
-            if record and record.kpi_fields and process_observation is not None:
+            if record and record.kpi_fields:
                 request_json = self._build_request_json(request, body)
                 config_json = self._build_endpoint_config(record)
 
@@ -2373,7 +2488,7 @@ class JinMiddleware(BaseHTTPMiddleware):
             json.dumps(item),
             config_json,
         )
-        return json.loads(result_str)
+        return self._normalize_native_reconciliation_result(json.loads(result_str))
 
     def _process_item(
         self,
@@ -2383,13 +2498,15 @@ class JinMiddleware(BaseHTTPMiddleware):
         item: Any,
         config_json: str,
     ) -> dict[str, Any]:
-        return json.loads(
-            self._run_native_process_observation(
-                endpoint_path,
-                method,
-                request_json,
-                json.dumps(item),
-                config_json,
+        return self._normalize_native_reconciliation_result(
+            json.loads(
+                self._run_native_process_observation(
+                    endpoint_path,
+                    method,
+                    request_json,
+                    json.dumps(item),
+                    config_json,
+                )
             )
         )
 
@@ -2444,7 +2561,9 @@ class JinMiddleware(BaseHTTPMiddleware):
         def _sync_call() -> list[dict[str, Any]]:
             if process_observations is not None and self.native_batch_observations_enabled:
                 with self.db_lock():
-                    return json.loads(
+                    return [
+                        self._normalize_native_reconciliation_result(item)
+                        for item in json.loads(
                         process_observations(
                             endpoint_path,
                             method,
@@ -2453,18 +2572,20 @@ class JinMiddleware(BaseHTTPMiddleware):
                             config_json,
                             self.db_path,
                         )
-                    )
+                    )]
             items = json.loads(response_json)
             if not isinstance(items, list):
                 items = [items]
             return [
-                json.loads(
-                    self._run_native_process_observation(
-                        endpoint_path,
-                        method,
-                        request_json,
-                        json.dumps(item),
-                        config_json,
+                self._normalize_native_reconciliation_result(
+                    json.loads(
+                        self._run_native_process_observation(
+                            endpoint_path,
+                            method,
+                            request_json,
+                            json.dumps(item),
+                            config_json,
+                        )
                     )
                 )
                 for item in items
@@ -2483,7 +2604,9 @@ class JinMiddleware(BaseHTTPMiddleware):
     ) -> list[dict[str, Any]]:
         if process_observations is not None and self.native_batch_observations_enabled:
             with self.db_lock():
-                return json.loads(
+                return [
+                    self._normalize_native_reconciliation_result(item)
+                    for item in json.loads(
                     process_observations(
                         endpoint_path,
                         method,
@@ -2492,18 +2615,20 @@ class JinMiddleware(BaseHTTPMiddleware):
                         config_json,
                         self.db_path,
                     )
-                )
+                )]
         items = json.loads(response_json)
         if not isinstance(items, list):
             items = [items]
         return [
-            json.loads(
-                self._run_native_process_observation(
-                    endpoint_path,
-                    method,
-                    request_json,
-                    json.dumps(item),
-                    config_json,
+            self._normalize_native_reconciliation_result(
+                json.loads(
+                    self._run_native_process_observation(
+                        endpoint_path,
+                        method,
+                        request_json,
+                        json.dumps(item),
+                        config_json,
+                    )
                 )
             )
             for item in items
@@ -2518,7 +2643,10 @@ class JinMiddleware(BaseHTTPMiddleware):
         item: Any,
         config_json: str,
     ) -> dict[str, Any]:
-        result = await self._process_item_async(endpoint_path, method, request_json, item, config_json)
+        if process_observation is None:
+            result = self._build_python_observation_result(record, request_json, item)
+        else:
+            result = await self._process_item_async(endpoint_path, method, request_json, item, config_json)
         self._mirror_python_state(record, result, item)
         for anomaly in result.get("anomalies", []):
             self.logger.warning(
@@ -2538,7 +2666,10 @@ class JinMiddleware(BaseHTTPMiddleware):
         item: Any,
         config_json: str,
     ) -> dict[str, Any]:
-        result = self._process_item(endpoint_path, method, request_json, item, config_json)
+        if process_observation is None:
+            result = self._build_python_observation_result(record, request_json, item)
+        else:
+            result = self._process_item(endpoint_path, method, request_json, item, config_json)
         self._mirror_python_state(record, result, item)
         for anomaly in result.get("anomalies", []):
             self.logger.warning(
@@ -2787,20 +2918,20 @@ class JinMiddleware(BaseHTTPMiddleware):
         if status == "error":
             return "Jin could not complete the API call for this grain."
         if status == "missing_reference":
-            return f"Jin did not find an uploaded baseline for {kpi_field} on this grain."
+            return f"Jin did not find an uploaded reference for {kpi_field} on this grain."
         if status == "missing_kpi":
-            return f"The API response did not include {kpi_field}, so Jin could not compare it to the uploaded baseline."
+            return f"The API response did not include {kpi_field}, so Jin could not compare it to the uploaded reference."
         if status == "match":
             if tolerance_pct is not None and pct_change is not None:
                 if abs(pct_change) == 0:
-                    return f"{kpi_field} matched the uploaded baseline ({actual} vs {expected})."
+                    return f"{kpi_field} matched the uploaded reference ({actual} vs {expected})."
                 return (
                     f"{kpi_field} stayed within the allowed +/-{tolerance_pct:.1f}% tolerance "
                     f"({abs(pct_change):.2f}% difference)."
                 )
-            return f"{kpi_field} matched the uploaded baseline ({actual} vs {expected})."
+            return f"{kpi_field} matched the uploaded reference ({actual} vs {expected})."
         if pct_change is None:
-            return f"{kpi_field} did not match the uploaded baseline ({actual} vs {expected})."
+            return f"{kpi_field} did not match the uploaded reference ({actual} vs {expected})."
         direction = "higher" if pct_change > 0 else "lower"
         if pct_change == 0:
             direction = "different"
@@ -2811,7 +2942,7 @@ class JinMiddleware(BaseHTTPMiddleware):
             )
         return (
             f"{kpi_field} returned {actual} while the CSV expected {expected} "
-            f"({abs(pct_change):.2f}% {direction} than the baseline)."
+            f"({abs(pct_change):.2f}% {direction} than the reference)."
         )
 
     def _analysis_run_from_result(
@@ -2912,11 +3043,11 @@ class JinMiddleware(BaseHTTPMiddleware):
         if mismatch_count:
             status = "mismatch"
             message = (
-                f"{mismatch_count} KPI check(s) did not match the uploaded baseline for this grain."
+                f"{mismatch_count} KPI check(s) did not match the uploaded reference for this grain."
             )
         else:
             status = "match"
-            message = f"All {matched_count} KPI check(s) matched the uploaded baseline for this grain."
+            message = f"All {matched_count} KPI check(s) matched the uploaded reference for this grain."
 
         return {
             "grain_key": grain_key,
@@ -3037,7 +3168,7 @@ class JinMiddleware(BaseHTTPMiddleware):
                             "actual": actual,
                             "expected": expected_value,
                             "pct_change": pct_change,
-                            "method": "reference",
+                            "method": "reconciliation",
                         }
                     )
             comparisons.append(
@@ -3080,16 +3211,55 @@ class JinMiddleware(BaseHTTPMiddleware):
             for key, value in path_dims.items():
                 if value not in (None, ""):
                     dimensions[str(key)] = value
+        query_dims = request_payload.get("query", {})
+        body_dims = request_payload.get("body", {})
+        if isinstance(query_dims, dict) and record.dimension_fields:
+            for key, value in query_dims.items():
+                if str(key) in dimensions:
+                    continue
+                if str(key) in record.dimension_fields and value not in (None, ""):
+                    dimensions[str(key)] = value
+        if isinstance(body_dims, dict) and record.dimension_fields:
+            for key, value in body_dims.items():
+                if str(key) in dimensions:
+                    continue
+                if str(key) in record.dimension_fields and value not in (None, ""):
+                    dimensions[str(key)] = value
+        if not record.dimension_fields:
+            for source in (query_dims, body_dims):
+                if not isinstance(source, dict):
+                    continue
+                for key, value in source.items():
+                    if len(dimensions) >= 8:
+                        break
+                    if str(key) in dimensions:
+                        continue
+                    if value in (None, "", [], {}):
+                        continue
+                    if isinstance(value, (str, int, float, bool)):
+                        dimensions[str(key)] = value
         for field in record.dimension_fields:
             value = self._lookup_analysis_actual_value(flattened, str(field))
             if value is not None:
                 dimensions[str(field)] = value
 
         kpi_json: dict[str, Any] = {}
-        for field in record.kpi_fields:
-            value = self._lookup_analysis_actual_value(flattened, str(field))
-            if value is not None:
-                kpi_json[str(field)] = value
+        if record.kpi_fields:
+            for field in record.kpi_fields:
+                value = self._lookup_analysis_actual_value(flattened, str(field))
+                if value is not None:
+                    kpi_json[str(field)] = value
+        else:
+            for key, value in flattened.items():
+                if len(kpi_json) >= 20:
+                    break
+                leaf = str(key).replace("[]", "").split(".")[-1]
+                if leaf in TECHNICAL_METADATA_FIELDS:
+                    continue
+                number = self._coerce_number(value)
+                if number is None:
+                    continue
+                kpi_json[str(key)] = number
 
         return {
             "grain_key": self._grain_key_from_dimensions(record.path, dimensions),
@@ -3098,6 +3268,106 @@ class JinMiddleware(BaseHTTPMiddleware):
             "comparisons": [],
             "anomalies": [],
         }
+
+    def _normalize_native_reconciliation_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            return result
+
+        comparisons_raw = result.get("comparisons")
+        comparisons: list[dict[str, Any]] = []
+        expected_by_kpi: dict[str, Any] = {}
+        if isinstance(comparisons_raw, list):
+            for entry in comparisons_raw:
+                if not isinstance(entry, dict):
+                    continue
+                normalized = dict(entry)
+                kpi_field = str(normalized.get("kpi_field") or "")
+                if kpi_field:
+                    expected = normalized.get("expected")
+                    if expected is not None:
+                        expected_by_kpi[kpi_field] = expected
+                comparisons.append(normalized)
+
+        anomalies_raw = result.get("anomalies")
+        anomalies: list[dict[str, Any]] = []
+        if isinstance(anomalies_raw, list):
+            for entry in anomalies_raw:
+                if not isinstance(entry, dict):
+                    continue
+                normalized = dict(entry)
+                method = str(normalized.get("method") or "").strip().lower()
+                kpi_field = str(normalized.get("kpi_field") or "")
+                if method in {"reconciliation", "reference"}:
+                    normalized["method"] = "reconciliation"
+                    anomalies.append(normalized)
+                    continue
+                if not kpi_field or kpi_field not in expected_by_kpi:
+                    # Drop threshold/statistical-only detections when no uploaded reference exists.
+                    continue
+                normalized["method"] = "reconciliation"
+                normalized.setdefault("expected", expected_by_kpi[kpi_field])
+                anomalies.append(normalized)
+
+        anomalies_by_kpi = {
+            str(item.get("kpi_field")): item
+            for item in anomalies
+            if isinstance(item, dict) and item.get("kpi_field") is not None
+        }
+        for comparison in comparisons:
+            kpi_field = str(comparison.get("kpi_field") or "")
+            actual = comparison.get("actual")
+            expected = comparison.get("expected")
+            mismatch = anomalies_by_kpi.get(kpi_field)
+            pct_change = self._comparison_pct_change(
+                actual,
+                expected,
+                mismatch.get("pct_change") if isinstance(mismatch, dict) else None,
+            )
+            status = str(comparison.get("reconciliation_status") or "").strip().lower()
+            if status not in {"match", "mismatch", "missing_reference", "missing_kpi"}:
+                if expected is None:
+                    status = "missing_reference"
+                elif mismatch is not None:
+                    status = "mismatch"
+                else:
+                    status = "match"
+            tolerance_pct = self._coerce_number(comparison.get("tolerance_pct"))
+            comparison["reconciliation_status"] = status
+            comparison.setdefault("delta_pct", pct_change)
+            comparison.setdefault("tolerance_pct", tolerance_pct)
+            comparison.setdefault(
+                "reason",
+                self._comparison_reason(
+                    kpi_field,
+                    actual,
+                    expected,
+                    status,
+                    pct_change,
+                    tolerance_pct,
+                ),
+            )
+
+        if "reconciliation" not in result:
+            total = len(comparisons)
+            mismatched = sum(
+                1 for item in comparisons if str(item.get("reconciliation_status")) == "mismatch"
+            )
+            missing_reference = sum(
+                1
+                for item in comparisons
+                if str(item.get("reconciliation_status")) == "missing_reference"
+            )
+            matched = max(total - mismatched - missing_reference, 0)
+            result["reconciliation"] = {
+                "total_checks": total,
+                "matched": matched,
+                "mismatched": mismatched,
+                "missing_reference": missing_reference,
+            }
+
+        result["comparisons"] = comparisons
+        result["anomalies"] = anomalies
+        return result
 
     def _prepare_reference_invocation(self, record: EndpointRecord, row: dict[str, Any]) -> dict[str, Any]:
         defaults = (record.watch_config or {}).get("default_params", {}) or {}

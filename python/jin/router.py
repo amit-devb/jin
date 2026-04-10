@@ -453,17 +453,19 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
 
     def baseline_label(method: str) -> str:  # pragma: no cover
         return {
-            "reference": "Reference baseline",
-            "threshold": "Previous healthy observation",
-            "statistical": "Historical mean baseline",
-        }.get(method, "Configured baseline")
+            "reconciliation": "Uploaded reference",
+            "reference": "Uploaded reference",
+            "threshold": "Tolerance check (legacy)",
+            "statistical": "Trend check (legacy)",
+            "upload_validation": "Upload validation",
+        }.get(method, "Uploaded reference")
 
     def change_summary(actual: object, expected: object, pct_change: object) -> str:  # pragma: no cover
         if not isinstance(actual, (int, float)) or not isinstance(expected, (int, float)):
-            return "No prior healthy baseline available."
+            return "No reference value was available for comparison."
         return (
             f"Changed from {expected:.4f} to {actual:.4f} "
-            f"({float(pct_change or 0):.2f}% versus baseline)."
+            f"({float(pct_change or 0):.2f}% versus reference)."
         )
 
     def anomaly_reason(row: dict[str, object]) -> str:  # pragma: no cover
@@ -1060,6 +1062,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "dimension_fields": record.dimension_fields,
             "kpi_fields": record.kpi_fields,
             "response_model_present": response_model_present,
+            "discovery_status": record.discovery_status,
+            "discovery_reason_codes": list(record.discovery_reason_codes or []),
             "schema_contract": {
                 "path": record.path,
                 "method": record.method,
@@ -1068,6 +1072,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 "dimension_fields": record.dimension_fields,
                 "kpi_fields": record.kpi_fields,
                 "response_model_present": response_model_present,
+                "discovery_status": record.discovery_status,
+                "discovery_reason_codes": list(record.discovery_reason_codes or []),
             },
         }
         if config_show is not None:
@@ -1148,6 +1154,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "dimension_fields": metadata["dimension_fields"],
             "kpi_fields": metadata["kpi_fields"],
             "field_count": len(metadata["fields"]),
+            "discovery_status": metadata.get("discovery_status", record.discovery_status),
+            "discovery_reason_codes": metadata.get("discovery_reason_codes", list(record.discovery_reason_codes or [])),
         }
         return metadata
 
@@ -1189,6 +1197,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "dimension_fields": dimension_fields,
             "kpi_fields": kpi_fields,
             "response_model_present": response_model_present,
+            "discovery_status": record.discovery_status,
+            "discovery_reason_codes": list(record.discovery_reason_codes or []),
             "schema_contract": {
                 "path": endpoint_path,
                 "method": record.method,
@@ -1197,6 +1207,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 "kpi_fields": kpi_fields,
                 "field_count": len(fields),
                 "response_model_present": response_model_present,
+                "discovery_status": record.discovery_status,
+                "discovery_reason_codes": list(record.discovery_reason_codes or []),
             },
         }
 
@@ -1445,6 +1457,165 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "time_candidates": candidates,
         }
 
+    def _coerce_number(value: object) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            text = str(value).strip()
+        except Exception:
+            return None
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def _setup_recommendations(record: Any, endpoint_path: str | None = None) -> list[dict[str, object]]:
+        fields = list(getattr(record, "fields", []) or [])
+        suggested_dimensions: list[str] = []
+        suggested_kpis: list[str] = []
+        suggested_time: list[str] = []
+
+        for item in fields:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            kind = str(item.get("kind") or "").strip().lower()
+            if kind == "dimension":
+                suggested_dimensions.append(name)
+            elif kind == "kpi":
+                suggested_kpis.append(name)
+            if bool(item.get("time_candidate")):
+                suggested_time.append(name)
+
+        recommendations: list[dict[str, object]] = []
+        if suggested_dimensions:
+            recommendations.append(
+                {
+                    "target": "dimension_fields",
+                    "values": suggested_dimensions[:4],
+                    "confidence": 0.86,
+                    "reason": "Derived from response model dimensions.",
+                }
+            )
+        if suggested_kpis:
+            recommendations.append(
+                {
+                    "target": "kpi_fields",
+                    "values": suggested_kpis[:4],
+                    "confidence": 0.88,
+                    "reason": "Derived from numeric KPI-like fields.",
+                }
+            )
+        if suggested_time:
+            recommendations.append(
+                {
+                    "target": "time_field",
+                    "values": [suggested_time[0]],
+                    "confidence": 0.75,
+                    "reason": "Field name/type/example suggests time semantics.",
+                }
+            )
+
+        if endpoint_path:
+            runtime_rows = runtime_mapping_rows(endpoint_path)[:50]
+            if runtime_rows:
+                values_by_key: dict[str, list[object]] = {}
+                for row in runtime_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    for key, value in row.items():
+                        name = str(key or "").strip()
+                        if not name or name in {"grain_key", "observed_at"}:
+                            continue
+                        leaf = name.replace("[]", "").split(".")[-1]
+                        if leaf in TECHNICAL_METADATA_FIELDS:
+                            continue
+                        values_by_key.setdefault(name, []).append(value)
+
+                runtime_dims: list[str] = []
+                runtime_kpis: list[str] = []
+                runtime_time: list[str] = []
+                for key, values in values_by_key.items():
+                    if any(_looks_like_time_example(v) for v in values):
+                        runtime_time.append(key)
+                    numeric_count = sum(1 for v in values if _coerce_number(v) is not None)
+                    if numeric_count >= max(1, len(values) // 2):
+                        runtime_kpis.append(key)
+                        continue
+                    uniq = {str(v) for v in values if v not in (None, "")}
+                    if uniq and len(uniq) <= min(8, len(values)):
+                        runtime_dims.append(key)
+
+                if runtime_dims and not suggested_dimensions:
+                    recommendations.append(
+                        {
+                            "target": "dimension_fields",
+                            "values": runtime_dims[:4],
+                            "confidence": 0.62,
+                            "reason": "Derived from observed request/response traffic.",
+                        }
+                    )
+                if runtime_kpis and not suggested_kpis:
+                    recommendations.append(
+                        {
+                            "target": "kpi_fields",
+                            "values": runtime_kpis[:6],
+                            "confidence": 0.65,
+                            "reason": "Derived from numeric fields observed in responses.",
+                        }
+                    )
+                if runtime_time and not suggested_time:
+                    recommendations.append(
+                        {
+                            "target": "time_field",
+                            "values": [runtime_time[0]],
+                            "confidence": 0.6,
+                            "reason": "Observed values look like time/period inputs.",
+                        }
+                    )
+        return recommendations
+
+    def _recommended_config_payload(
+        record: Any, existing_overrides: dict[str, Any] | None = None, endpoint_path: str | None = None
+    ) -> dict[str, Any]:
+        overrides = existing_overrides if isinstance(existing_overrides, dict) else {}
+        recommendations = _setup_recommendations(record, endpoint_path)
+        dims: list[str] = []
+        kpis: list[str] = []
+        time_field: str | None = None
+        for item in recommendations:
+            target = str(item.get("target") or "")
+            values = item.get("values")
+            if not isinstance(values, list) or not values:
+                continue
+            if target == "dimension_fields":
+                dims = [str(value) for value in values if str(value).strip()]
+            elif target == "kpi_fields":
+                kpis = [str(value) for value in values if str(value).strip()]
+            elif target == "time_field":
+                time_field = str(values[0]).strip() if values[0] is not None else None
+
+        payload: dict[str, Any] = {
+            "dimension_fields": dims or list(getattr(record, "dimension_fields", []) or []),
+            "kpi_fields": kpis or list(getattr(record, "kpi_fields", []) or []),
+            "time_field": time_field or str(overrides.get("time_field") or "").strip() or None,
+            "tolerance_pct": float(overrides.get("tolerance_pct", middleware.global_threshold)),
+            "tolerance_relaxed": float(overrides.get("tolerance_relaxed", 20.0)),
+            "tolerance_normal": float(overrides.get("tolerance_normal", overrides.get("tolerance_pct", middleware.global_threshold))),
+            "tolerance_strict": float(overrides.get("tolerance_strict", 5.0)),
+            "active_tolerance": str(overrides.get("active_tolerance") or "normal"),
+            "confirmed": True,
+        }
+        return payload
+
     def _setup_snapshot(endpoint_path: str) -> dict[str, Any]:
         record = endpoint_record_or_404(endpoint_path)
         overrides = middleware._load_overrides(endpoint_path) or {}
@@ -1453,6 +1624,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         kpi_fields = overrides.get("kpi_fields")
         return {
             "response_model_present": record.response_model is not None,
+            "discovery_status": record.discovery_status,
+            "discovery_reason_codes": list(record.discovery_reason_codes or []),
             "dimension_fields": dimension_fields if isinstance(dimension_fields, list) else [],
             "kpi_fields": kpi_fields if isinstance(kpi_fields, list) else [],
             "time_field": str(overrides.get("time_field") or "").strip() or None,
@@ -1462,12 +1635,12 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "time_extraction_rule": overrides.get("time_extraction_rule") or "single",
             "time_required": bool(time_requirements.get("time_required", True)),
             "time_candidates": time_requirements.get("time_candidates") or [],
+            "recommendations": _setup_recommendations(record, endpoint_path),
+            "recommended_config_payload": _recommended_config_payload(record, overrides, endpoint_path),
         }
 
     def _setup_blockers(snapshot: dict[str, Any]) -> list[str]:
         blockers: list[str] = []
-        if not bool(snapshot.get("response_model_present", True)):
-            blockers.append("define a Pydantic response model first")
         if not list(snapshot.get("dimension_fields") or []):
             blockers.append("pick at least one Segment field")
         if not list(snapshot.get("kpi_fields") or []):
@@ -1901,6 +2074,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 "http_method": record.method,
                 "dimension_fields": metadata["dimension_fields"],
                 "kpi_fields": metadata["kpi_fields"],
+                "discovery_status": metadata.get("discovery_status", record.discovery_status),
+                "discovery_reason_codes": metadata.get("discovery_reason_codes", list(record.discovery_reason_codes or [])),
                 "time_field": None,
                 "time_required": bool(_time_candidates_from_fields(metadata["fields"])),
                 "time_candidates": _time_candidates_from_fields(metadata["fields"]),
@@ -1932,7 +2107,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             defaults.update(load_endpoint_operational_metadata(path))
             endpoints.append(defaults)
         endpoints.sort(key=lambda item: (item["endpoint_path"], item["http_method"]))
-        return {
+        payload = {
             "summary": {
                 "total_endpoints": len(endpoints),
                 "healthy": sum(1 for item in endpoints if item["status"] == "healthy"),
@@ -1943,6 +2118,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "project": middleware.dashboard_context(),
             "recent_errors": middleware.dashboard_context()["recent_errors"],
         }
+        payload["telemetry"] = telemetry_from_status(payload)
+        return payload
 
     def merge_status_payload(payload: dict[str, object]) -> dict[str, object]:
         runtime_endpoints = {
@@ -1958,6 +2135,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 "http_method": record.method,
                 "dimension_fields": metadata["dimension_fields"],
                 "kpi_fields": metadata["kpi_fields"],
+                "discovery_status": metadata.get("discovery_status", record.discovery_status),
+                "discovery_reason_codes": metadata.get("discovery_reason_codes", list(record.discovery_reason_codes or [])),
                 "time_field": None,
                 "time_required": bool(_time_candidates_from_fields(metadata["fields"])),
                 "time_candidates": _time_candidates_from_fields(metadata["fields"]),
@@ -1979,6 +2158,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             base["fields"] = metadata["fields"]
             base["dimension_fields"] = metadata["dimension_fields"]
             base["kpi_fields"] = metadata["kpi_fields"]
+            base["discovery_status"] = metadata.get("discovery_status", base.get("discovery_status"))
+            base["discovery_reason_codes"] = metadata.get("discovery_reason_codes", base.get("discovery_reason_codes"))
             overrides = middleware._load_overrides(path)
             if overrides:
                 base["dimension_fields"] = overrides.get("dimension_fields") or base["dimension_fields"]
@@ -1994,12 +2175,14 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "anomalies": sum(int(item["active_anomalies"]) for item in merged),
             "unconfirmed": sum(1 for item in merged if not item["confirmed"]),
         }
-        return {
+        payload = {
             "summary": summary,
             "endpoints": merged,
             "project": middleware.dashboard_context(),
             "recent_errors": middleware.dashboard_context()["recent_errors"],
         }
+        payload["telemetry"] = telemetry_from_status(payload)
+        return payload
 
     def status_payload_native_or_runtime(*, prefer_runtime: bool = False) -> dict[str, object]:
         if prefer_runtime:
@@ -2098,6 +2281,68 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "unconfirmed": int(unconfirmed or 0),
         }
 
+    def _parse_timestamp(value: object) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+
+    def telemetry_from_status(payload: dict[str, object]) -> dict[str, object]:
+        endpoints = [item for item in payload.get("endpoints", []) if isinstance(item, dict)]
+        summary = normalize_status_summary(payload.get("summary"), endpoints)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        observed = [item for item in endpoints if int(item.get("grain_count", 0) or 0) > 0]
+        observed_count = len(observed)
+        coverage_pct = round((observed_count / max(len(endpoints), 1)) * 100, 2) if endpoints else 0.0
+
+        first_insight_seconds = None
+        observed_times = [_parse_timestamp(item.get("last_checked")) for item in endpoints]
+        observed_times = [item for item in observed_times if item is not None]
+        if observed_times:
+            first_insight_seconds = round(max((min(observed_times) - now).total_seconds() * -1, 0.0), 2)
+
+        runtime_active = [
+            anomaly
+            for state in middleware.runtime_state.values()
+            for anomaly in state.get("anomalies", [])
+            if isinstance(anomaly, dict) and anomaly.get("is_active")
+        ]
+        active_issue_count = int(summary.get("anomalies", 0) or 0)
+        false_positive_rate = None
+        if runtime_active:
+            unresolved = sum(1 for item in runtime_active if str(item.get("status") or "") != "resolved")
+            false_positive_rate = round(max(len(runtime_active) - unresolved, 0) / max(len(runtime_active), 1), 4)
+
+        oldest_unresolved_minutes = None
+        active_times = [_parse_timestamp(item.get("detected_at")) for item in runtime_active]
+        active_times = [item for item in active_times if item is not None]
+        if active_times:
+            oldest = min(active_times)
+            oldest_unresolved_minutes = round(max((now - oldest).total_seconds() / 60.0, 0.0), 2)
+
+        return {
+            "generated_at": now.isoformat(sep=" "),
+            "trust": {
+                "observed_endpoint_coverage_pct": coverage_pct,
+                "time_to_first_insight_seconds": first_insight_seconds,
+                "active_issue_count": active_issue_count,
+                "oldest_unresolved_issue_age_minutes": oldest_unresolved_minutes,
+                "resolved_share_estimate": false_positive_rate,
+            },
+            "counters": {
+                "total_endpoints": int(summary.get("total_endpoints", 0) or 0),
+                "observed_endpoints": observed_count,
+                "active_anomalies": active_issue_count,
+                "unconfirmed_endpoints": int(summary.get("unconfirmed", 0) or 0),
+            },
+        }
+
     def project_context_for_status(project: dict[str, object], summary: dict[str, object]) -> dict[str, object]:
         if is_current_project(project):
             return middleware.dashboard_context()
@@ -2142,12 +2387,14 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         endpoint_rows = native_payload.get("endpoints")
         endpoints = [row for row in endpoint_rows if isinstance(row, dict)] if isinstance(endpoint_rows, list) else []
         summary = normalize_status_summary(native_payload.get("summary"), endpoints)
-        return {
+        payload = {
             "summary": summary,
             "endpoints": endpoints,
             "project": project_context_for_status(project, summary),
             "recent_errors": [],
         }
+        payload["telemetry"] = telemetry_from_status(payload)
+        return payload
 
     def baseline_coverage_summary(
         endpoint_path: str | None = None,
@@ -2285,12 +2532,12 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             {
                 "name": "baseline_coverage",
                 "status": "pass" if float(baseline_summary.get("coverage_pct", 0.0)) >= 70.0 else "warn",
-                "detail": f"{baseline_summary.get('endpoints_with_baseline', 0)} endpoints with baseline",
+                "detail": f"{baseline_summary.get('endpoints_with_baseline', 0)} endpoints with references",
             },
             {
                 "name": "active_anomalies",
                 "status": "pass" if anomaly_count == 0 else "warn",
-                "detail": f"{anomaly_count} active anomalies",
+                "detail": f"{anomaly_count} active issues",
             },
             {
                 "name": "operator_errors",
@@ -2303,6 +2550,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "status": health_status,
             "summary": summary,
             "baseline": baseline_summary,
+            "references": baseline_summary,
             "scheduler": scheduler_summary,
             "checks": checks,
             "project": project_context_for_status(project, normalize_status_summary(summary, computed_status_payload.get("endpoints"))),
@@ -2557,9 +2805,9 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             f"- Overall status: {payload.get('status', 'unknown')}",
             f"- Endpoints monitored: {summary.get('total_endpoints', 0)}",
             f"- Healthy endpoints: {summary.get('healthy', 0)}",
-            f"- Active anomalies: {active_anomalies}",
+            f"- Active issues: {active_anomalies}",
             f"- Unconfirmed endpoints: {summary.get('unconfirmed', 0)}",
-            f"- Baseline coverage: {baseline.get('coverage_pct', 0.0)}%",
+            f"- Reference coverage: {baseline.get('coverage_pct', 0.0)}%",
             f"- Scheduler jobs: {scheduler.get('total_jobs', 0)} total / {scheduler.get('failing_jobs', 0)} failing",
             "",
             "## Checks",
@@ -2621,9 +2869,9 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "",
             f"- Generated at: {payload.get('generated_at')}",
             f"- HTTP method: {payload.get('http_method', 'GET')}",
-            f"- Baseline rows: {payload.get('baseline', {}).get('total_reference_rows', 0)}",
-            f"- Baseline grains: {payload.get('baseline', {}).get('grains_with_baseline', 0)}",
-            f"- Active anomalies: {payload.get('anomaly_count', 0)}",
+            f"- Reference rows: {payload.get('baseline', {}).get('total_reference_rows', 0)}",
+            f"- Reference grains: {payload.get('baseline', {}).get('grains_with_baseline', 0)}",
+            f"- Active issues: {payload.get('anomaly_count', 0)}",
             "",
             "## KPI Snapshot",
         ]
@@ -2631,7 +2879,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         for item in current_kpis:
             if isinstance(item, dict):
                 lines.append(
-                    f"- {item.get('kpi_field')}: actual {item.get('actual_value')} baseline {item.get('expected_value')}"
+                    f"- {item.get('kpi_field')}: actual {item.get('actual_value')} expected {item.get('expected_value')}"
                 )
         if not current_kpis:
             lines.append("- No KPI snapshot available yet.")
@@ -3501,6 +3749,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         health_payload = project_health_payload(project_id)
         selected_db_path = str(project.get("db_path") or middleware.db_path)
         active_anomalies = active_issue_rows_for_project(project, limit=20)
+        active_issues = active_anomalies
         report_payload: dict[str, object] = {
             "generated_at": health_payload["generated_at"],
             "project": health_payload["project"],
@@ -3508,7 +3757,9 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "summary": health_payload["summary"],
             "scheduler": health_payload["scheduler"],
             "baseline": health_payload["baseline"],
+            "references": health_payload["baseline"],
             "active_anomalies": active_anomalies,
+            "active_issues": active_issues,
         }
         if report_summary is not None:
             try:
@@ -3739,7 +3990,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "workflows": [
                 {
                     "id": "configure-upload",
-                    "title": "Configure + Upload Baseline",
+                    "title": "Configure + Upload References",
                     "outcome": "Set expected values and tolerance for each data product grain.",
                     "ui_action": "po_open_api_validation",
                 },
@@ -3751,8 +4002,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 },
                 {
                     "id": "refresh-baseline",
-                    "title": "Refresh Baseline",
-                    "outcome": "Promote healthy latest observations when targets should move.",
+                    "title": "Refresh References",
+                    "outcome": "Update references when the expected business truth changes.",
                     "ui_action": "po_refresh_baseline",
                 },
                 {
@@ -3770,12 +4021,12 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 {"method": "DELETE", "path": "/jin/api/v2/projects/{project_id}", "purpose": "Delete an archived project"},
                 {"method": "POST", "path": "/jin/api/v2/projects/{project_id}/check-plan", "purpose": "Set monitoring plan"},
                 {"method": "POST", "path": "/jin/api/v2/projects/{project_id}/checks/run", "purpose": "Run project checks"},
-                {"method": "POST", "path": "/jin/api/v2/projects/{project_id}/baseline/refresh", "purpose": "Refresh project baseline"},
+                {"method": "POST", "path": "/jin/api/v2/projects/{project_id}/baseline/refresh", "purpose": "Refresh project references"},
                 {"method": "GET", "path": "/jin/api/v2/health", "purpose": "Project health snapshot"},
                 {"method": "GET", "path": "/jin/api/v2/portfolio/health", "purpose": "Cross-project health monitor"},
                 {"method": "GET", "path": "/jin/api/v2/reports/leadership-digest", "purpose": "Leadership digest"},
-                {"method": "POST", "path": "/jin/api/v2/upload/{path}", "purpose": "Upload baseline references for endpoint"},
-                {"method": "POST", "path": "/jin/api/v2/upload-async/{path}", "purpose": "Start async baseline upload with progress"},
+                {"method": "POST", "path": "/jin/api/v2/upload/{path}", "purpose": "Upload reference rows for endpoint"},
+                {"method": "POST", "path": "/jin/api/v2/upload-async/{path}", "purpose": "Start async reference upload with progress"},
                 {"method": "GET", "path": "/jin/api/v2/upload-async/{job_id}", "purpose": "Check async upload job status"},
                 {"method": "POST", "path": "/jin/api/v2/check/{path}", "purpose": "Trigger endpoint check"},
                 {"method": "GET|POST", "path": "/jin/api/v2/query", "purpose": "Query trend rollups"},
@@ -3812,6 +4063,27 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         else:
             raise HTTPException(status_code=400, detail=result.get("error", "Activation failed"))
 
+    @router.get("/api/v2/setup/issues")
+    async def setup_issues(request: Request = None) -> JSONResponse:
+        require_auth(request, api=True)
+        rows: list[dict[str, object]] = []
+        for endpoint_path in sorted(middleware.endpoint_registry.keys()):
+            snapshot = _setup_snapshot(endpoint_path)
+            blockers = _setup_blockers(snapshot)
+            if not blockers:
+                continue
+            rows.append(
+                {
+                    "endpoint_path": endpoint_path,
+                    "blockers": blockers,
+                    "discovery_status": snapshot.get("discovery_status"),
+                    "discovery_reason_codes": snapshot.get("discovery_reason_codes"),
+                    "recommended_config_payload": snapshot.get("recommended_config_payload"),
+                    "next_step": "Open /jin, go to Configuration for this endpoint, apply recommendations, then save.",
+                }
+            )
+        return JSONResponse({"ok": True, "issues": rows, "count": len(rows)})
+
     @router.get("/api/endpoint/{path:path}")
     @router.get("/api/v2/endpoint/{path:path}")
     async def endpoint_detail(
@@ -3833,6 +4105,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "dimension_fields": record.dimension_fields,
             "kpi_fields": record.kpi_fields,
             "response_model_present": response_model_present,
+            "discovery_status": record.discovery_status,
+            "discovery_reason_codes": list(record.discovery_reason_codes or []),
         }
         runtime_state = middleware.runtime_state.get(endpoint_path, {})
         last_upload_analysis, upload_analysis_history = upload_analysis_payload_for(endpoint_path)
@@ -3906,6 +4180,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                             "endpoint_path": endpoint_path,
                             "http_method": endpoint.get("http_method", record.method),
                             "response_model_present": response_model_present,
+                            "discovery_status": record.discovery_status,
+                            "discovery_reason_codes": list(record.discovery_reason_codes or []),
                             "dimension_fields": dimension_fields,
                             "kpi_fields": kpi_fields,
                             "fields": fields,
@@ -3929,6 +4205,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                             "monitoring_runs": monitoring_runs,
                             "last_upload_analysis": last_upload_analysis,
                             "upload_analysis_history": upload_analysis_history,
+                            "setup": _setup_snapshot(endpoint_path),
                         }
                     )
             except Exception as exc:
@@ -4122,6 +4399,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 "endpoint_path": endpoint_path,
                 "http_method": http_method,
                 "response_model_present": response_model_present,
+                "discovery_status": record.discovery_status,
+                "discovery_reason_codes": list(record.discovery_reason_codes or []),
                 "dimension_fields": dimension_fields,
                 "kpi_fields": kpi_fields,
                 "fields": record.fields,
@@ -4153,6 +4432,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 "monitoring_runs": monitoring_runs,
                 "last_upload_analysis": last_upload_analysis,
                 "upload_analysis_history": upload_analysis_history,
+                "setup": _setup_snapshot(endpoint_path),
             }
         )
 
@@ -4162,23 +4442,6 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         require_auth(request, api=True)
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         record = endpoint_record_or_404(endpoint_path)
-        if record.response_model is None:
-            snapshot = _setup_snapshot(endpoint_path)
-            blockers = _setup_blockers(snapshot)
-            message = (
-                "Define a Pydantic response model first. Jin needs the model to discover fields before setup can be saved."
-            )
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "endpoint_path": endpoint_path,
-                    "error": message,
-                    "setup_blockers": blockers,
-                    "setup": snapshot,
-                    "next_step": "Add response_model to this FastAPI route, then come back to Configuration.",
-                },
-                status_code=409,
-            )
         raw_payload = await request.json()
         if not isinstance(raw_payload, dict):
             raw_payload = {}
@@ -4287,24 +4550,19 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         record = endpoint_record_or_404(endpoint_path)
         setup_snapshot = _setup_snapshot(endpoint_path)
-        if not bool(setup_snapshot.get("response_model_present", True)):
-            message = (
-                "Define a Pydantic response model first. Jin needs the model to discover fields before setup can be saved."
-            )
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "endpoint_path": endpoint_path,
-                    "error": message,
-                    "setup_blockers": _setup_blockers(setup_snapshot),
-                    "setup": setup_snapshot,
-                    "next_step": "Add response_model to this FastAPI route, then come back to Configuration.",
-                },
-                status_code=409,
-            )
         payload = await request.json()
         if not isinstance(payload, dict):
             payload = {}
+        if bool(payload.get("apply_recommendations")):
+            recommended = _recommended_config_payload(
+                record,
+                middleware._load_overrides(endpoint_path) or {},
+                endpoint_path,
+            )
+            payload = {
+                **recommended,
+                **{k: v for k, v in payload.items() if k != "apply_recommendations"},
+            }
         watch_overrides = payload.get("watch_overrides")
         if isinstance(watch_overrides, dict):
             watch_payload: dict[str, Any] = {"default_params": watch_overrides}
@@ -6245,6 +6503,33 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.get("/api/v2/anomalies")
     async def anomalies(request: Request = None) -> JSONResponse:
         require_auth(request, api=True)
+        def _normalize_issue_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+            normalized: list[dict[str, object]] = []
+            for raw in rows:
+                if not isinstance(raw, dict):
+                    continue
+                item = dict(raw)
+                method = str(item.get("detection_method") or item.get("method") or "").strip().lower()
+                reconciliation_status = str(item.get("reconciliation_status") or "").strip().lower()
+                if method == "upload_validation":
+                    normalized.append(item)
+                    continue
+                if method in {"reference", "reconciliation"}:
+                    item["detection_method"] = "reconciliation"
+                    item["method"] = "reconciliation"
+                    if not reconciliation_status:
+                        item["reconciliation_status"] = "mismatch"
+                    normalized.append(item)
+                    continue
+                if reconciliation_status == "mismatch":
+                    item["detection_method"] = "reconciliation"
+                    item["method"] = "reconciliation"
+                    normalized.append(item)
+                    continue
+                # Drop threshold/statistical/legacy non-reconciliation rows.
+                continue
+            return normalized
+
         history_rows: list[dict[str, object]] | None = None
         if issues_list is not None:
             try:
@@ -6257,14 +6542,14 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                         item.get("suppressed_until"),
                     )
                 if history:
-                    history_rows = history
+                    history_rows = _normalize_issue_rows(history)
             except Exception:  # pragma: no cover
                 pass
         if history_rows is None and duckdb is not None:  # pragma: no branch
             try:
                 history = load_anomaly_rows()
                 if history:
-                    history_rows = history
+                    history_rows = _normalize_issue_rows(history)
             except Exception:  # pragma: no cover
                 pass
 
@@ -6281,11 +6566,11 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                     )
                 active = [item for item in active if item.get("status") != "resolved"]
                 if active:
-                    history_rows = active
+                    history_rows = _normalize_issue_rows(active)
             except Exception:  # pragma: no cover
                 pass
         if history_rows is None:
-            history_rows = runtime_enriched_anomalies(True)  # pragma: no cover
+            history_rows = _normalize_issue_rows(runtime_enriched_anomalies(True))  # pragma: no cover
 
         for path in middleware.endpoint_registry.keys():
             ensure_runtime_upload_issues_loaded(path)
@@ -6341,9 +6626,11 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             for item in history_rows
             if item.get("status") != "resolved" and int(item.get("id") or 0) not in resolved_ids
         ]
-        return JSONResponse(
-            jsonable_encoder({"anomalies": active, "history": history_rows[:50]})
-        )
+        payload = {"anomalies": active, "history": history_rows[:50]}
+        # Reconciliation-first naming: keep legacy keys for compatibility.
+        payload["issues"] = payload["anomalies"]
+        payload["issue_history"] = payload["history"]
+        return JSONResponse(jsonable_encoder(payload))
 
     @router.get("/api/scheduler")
     @router.get("/api/v2/scheduler")

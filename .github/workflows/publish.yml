@@ -45,7 +45,13 @@ jobs:
       - name: Build wheel
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        run: python -m maturin build --release -i python --out dist
+        shell: bash
+        run: |
+          args=(--release --find-interpreter --strip --out dist)
+          if [[ "${RUNNER_OS}" == "Linux" ]]; then
+            args+=(--manylinux 2014)
+          fi
+          python -m maturin build "${args[@]}"
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:

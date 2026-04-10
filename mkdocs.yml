@@ -10,6 +10,7 @@ nav:
   - Overview: index.md
   - Why Jin: vision.md
   - Getting Started: getting-started.md
+  - Architecture Blueprint: architecture.md
   - Configuration Guide: configuration.md
   - Incident Workflow: incidents.md
   - CLI Guide: cli.md

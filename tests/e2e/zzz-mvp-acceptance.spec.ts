@@ -3,7 +3,15 @@ import { expect, test } from '@playwright/test';
 const REVENUE_API = '/api/revenue/{retailer}';
 const REVENUE_API_ENCODED = encodeURIComponent(REVENUE_API);
 
-function buildMismatchCsv(): Buffer {
+function utf8Bytes(text: string): Uint8Array {
+  // Minimal UTF-8 encoder so this spec does not require Node's Buffer types.
+  const encoded = unescape(encodeURIComponent(text));
+  const out = new Uint8Array(encoded.length);
+  for (let i = 0; i < encoded.length; i += 1) out[i] = encoded.charCodeAt(i);
+  return out;
+}
+
+function buildMismatchCsv(): Uint8Array {
   const header = [
     'endpoint',
     'dimension_fields',
@@ -33,7 +41,7 @@ function buildMismatchCsv(): Buffer {
     );
   });
 
-  return Buffer.from(`${rows.join('\n')}\n`, 'utf-8');
+  return utf8Bytes(`${rows.join('\n')}\n`);
 }
 
 test('MVP acceptance: configure, upload mismatch, review issue, resolve', async ({ page }) => {
@@ -66,7 +74,8 @@ test('MVP acceptance: configure, upload mismatch, review issue, resolve', async 
   await page.setInputFiles('#upload-file', {
     name: 'mvp-mismatch.csv',
     mimeType: 'text/csv',
-    buffer: buildMismatchCsv(),
+    // Playwright accepts a Node Buffer here, but Uint8Array works at runtime.
+    buffer: buildMismatchCsv() as any,
   });
   await page.click('#preview-upload-button');
   await expect(page.locator('#upload-preview-step')).toBeVisible();

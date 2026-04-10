@@ -81,6 +81,8 @@ const state: DashboardState = {
       poMode: false,
       configFocusExpandedByApi: {},
       activeUploadJobByApi: {},
+      mappingNoSamplesToastByApi: {},
+      uploadConfirmGateByApi: {},
       apiDataState: 'fresh',
       apiDataMessage: null,
       apiDataUpdatedAt: null,
@@ -858,7 +860,7 @@ const state: DashboardState = {
       const endpointPathEscaped = String(item.endpoint_path).replace(/'/g, "\\\\'");
       
       const humanMessage = absPct >= 40 
-        ? `<strong>Major ${isHigher ? 'increase' : 'drop'}</strong> compared to the baseline.`
+        ? `<strong>Major ${isHigher ? 'increase' : 'drop'}</strong> compared to the target.`
         : `<strong>${isHigher ? 'Higher' : 'Lower'}</strong> than expected.`;
 
       ui.drawerBody.innerHTML = `
@@ -916,7 +918,7 @@ const state: DashboardState = {
           <div class="meta-card"><strong>Priority</strong><span>${severityLabelMap[item.severity] || item.severity || 'Medium'}</span></div>
           <div class="meta-card"><strong>Owner</strong><span>${item.owner || 'Unassigned'}</span></div>
           <div class="meta-card"><strong>Detected</strong><span>${detectedText}</span></div>
-          <div class="meta-card"><strong>Change details</strong><span>${item.change_since_last_healthy_run || `${item.kpi_field} moved by ${fmt(pctValue)}% from baseline.`}</span></div>
+          <div class="meta-card"><strong>Change details</strong><span>${item.change_since_last_healthy_run || `${item.kpi_field} moved by ${fmt(pctValue)}% from target.`}</span></div>
         </div>
 
         ${item.sample_json ? `
@@ -933,7 +935,7 @@ const state: DashboardState = {
           <div class="tiny" style="margin-bottom:8px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.05em;">Recommended next step</div>
 
           <button class="action secondary" style="width:100%; justify-content:center;" type="button" onclick="quickFixBaseline(${item.id})">
-            Accept ${fmt(item.actual_value)} as new baseline
+            Accept ${fmt(item.actual_value)} as new target
           </button>
           <div class="tiny muted" style="margin-top:6px;">Use this only if this new value is expected going forward.</div>
 
@@ -994,7 +996,7 @@ const state: DashboardState = {
         </section>
         <div class="drawer-primary-actions">
           <button class="action secondary" type="button" onclick="confirmDrawerIncident(${item.id}, 'acknowledged', 0)">Mark In Review</button>
-          <button class="action secondary" type="button" onclick="quickFixBaseline(${item.id})">Accept as Baseline</button>
+          <button class="action secondary" type="button" onclick="quickFixBaseline(${item.id})">Accept as Target</button>
           <button class="action warn" type="button" onclick="confirmDrawerIncident(${item.id}, 'resolved', 0)">Resolve</button>
         </div>
         <details class="simple-section nested">

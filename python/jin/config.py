@@ -57,6 +57,24 @@ def _nested_model_annotation(annotation: Any) -> tuple[Any, str] | None:
     return None
 
 
+def _normalize_model_annotation(model: Any) -> tuple[type[BaseModel] | None, bool]:
+    normalized = _unwrap_annotation(model)
+    if isinstance(normalized, type) and issubclass(normalized, BaseModel):
+        return normalized, False
+
+    origin = get_origin(normalized)
+    if origin not in {list, tuple, set, frozenset}:
+        return None, False
+
+    args = [arg for arg in get_args(normalized) if arg is not Ellipsis]
+    if len(args) != 1:
+        return None, False
+    inner = _unwrap_annotation(args[0])
+    if isinstance(inner, type) and issubclass(inner, BaseModel):
+        return inner, True
+    return None, False
+
+
 def _json_safe_example(value: Any) -> Any:
     if value is None:
         return None
@@ -233,12 +251,17 @@ def _looks_like_time_name(name: str) -> bool:
 
 
 def classify_model(
-    model: type[BaseModel] | None,
+    model: Any,
     prefix: str = "",
     inherited_example_map: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str], list[str], str | None]:
     if model is None:
         return [], [], [], None
+
+    normalized_model, _ = _normalize_model_annotation(model)
+    if normalized_model is None:
+        return [], [], [], None
+    model = normalized_model
 
     example_map: dict[str, Any] = dict(inherited_example_map or {})
     for key, value in _model_example_map(model, prefix=prefix).items():
