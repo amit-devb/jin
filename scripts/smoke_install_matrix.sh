@@ -60,6 +60,14 @@ resolve_executable() {
 PYTHON_BIN="$(resolve_executable "${PYTHON_BIN}")"
 SYSTEM_PYTHON_BIN="$(resolve_executable "${SYSTEM_PYTHON_BIN}")"
 
+# Resolve to a concrete Windows python.exe path that tools like uv accept.
+# `command -v python` under Git Bash can return a POSIX path without `.exe`,
+# which uv treats as a literal file path and rejects.
+python_sys_executable() {
+  local python_bin="$1"
+  "${python_bin}" -c 'import sys; print(sys.executable.replace("\\\\", "/"))'
+}
+
 cleanup() {
   rm -rf "${TMP_ROOT}"
 }
@@ -255,6 +263,14 @@ resolve_cli_executable() {
     echo "${base}.exe"
     return 0
   fi
+  if [[ -x "${base}.cmd" ]] || [[ -f "${base}.cmd" ]]; then
+    echo "${base}.cmd"
+    return 0
+  fi
+  if [[ -x "${base}.bat" ]] || [[ -f "${base}.bat" ]]; then
+    echo "${base}.bat"
+    return 0
+  fi
   echo "${base}"
 }
 
@@ -292,6 +308,14 @@ venv_jin_bin() {
     echo "${scripts_dir}/jin.exe"
     return 0
   fi
+  if [[ -x "${scripts_dir}/jin.cmd" ]] || [[ -f "${scripts_dir}/jin.cmd" ]]; then
+    echo "${scripts_dir}/jin.cmd"
+    return 0
+  fi
+  if [[ -x "${scripts_dir}/jin.bat" ]] || [[ -f "${scripts_dir}/jin.bat" ]]; then
+    echo "${scripts_dir}/jin.bat"
+    return 0
+  fi
   echo "${scripts_dir}/jin"
 }
 
@@ -299,17 +323,18 @@ run_pip_smoke() {
   log "Running pip install smoke test"
   local venv_dir="${TMP_ROOT}/pip-venv"
   local python_bin
-  local jin_bin
   local target
   local extra_args
   "${PYTHON_BIN}" -m venv "${venv_dir}"
   python_bin="$(venv_python_bin "${venv_dir}")"
-  jin_bin="$(venv_jin_bin "${venv_dir}")"
   "${python_bin}" -m pip install --upgrade pip >/dev/null
   target="$(pip_install_target)"
   extra_args="$(pip_install_args)"
   # shellcheck disable=SC2086
   run_install_with_metrics "pip" "${python_bin}" -m pip install ${extra_args} "${target}"
+  # Resolve after install so we pick up the generated console script.
+  local jin_bin
+  jin_bin="$(venv_jin_bin "${venv_dir}")"
   run_cli_checks "${jin_bin}" "${TMP_ROOT}/pip-runtime"
 }
 
@@ -325,16 +350,18 @@ run_uv_smoke() {
   log "Running uv install smoke test"
   local venv_dir="${TMP_ROOT}/uv-venv"
   local python_bin
-  local jin_bin
+  local uv_python
   local target
   local extra_args
-  uv venv "${venv_dir}" --python "${PYTHON_BIN}" >/dev/null
+  uv_python="$(python_sys_executable "${PYTHON_BIN}")"
+  uv venv "${venv_dir}" --python "${uv_python}" >/dev/null
   python_bin="$(venv_python_bin "${venv_dir}")"
-  jin_bin="$(venv_jin_bin "${venv_dir}")"
   target="$(pip_install_target)"
   extra_args="$(pip_install_args)"
   # shellcheck disable=SC2086
   run_install_with_metrics "uv" uv pip install --python "${python_bin}" ${extra_args} "${target}"
+  local jin_bin
+  jin_bin="$(venv_jin_bin "${venv_dir}")"
   run_cli_checks "${jin_bin}" "${TMP_ROOT}/uv-runtime"
 }
 
@@ -356,9 +383,9 @@ run_pipx_smoke() {
   source="$(resolve_install_source)"
   target="$(pip_install_target)"
   if [[ "${source}" == "pypi" ]]; then
-    run_install_with_metrics "pipx" pipx_exec install --force --python "${PYTHON_BIN}" --pip-args="--only-binary=:all:" "${target}"
+    run_install_with_metrics "pipx" pipx_exec install --force --python "$(python_sys_executable "${PYTHON_BIN}")" --pip-args="--only-binary=:all:" "${target}"
   else
-    run_install_with_metrics "pipx" pipx_exec install --force --python "${PYTHON_BIN}" "${target}"
+    run_install_with_metrics "pipx" pipx_exec install --force --python "$(python_sys_executable "${PYTHON_BIN}")" "${target}"
   fi
   run_cli_checks "${PIPX_BIN_DIR}/jin" "${TMP_ROOT}/pipx-runtime"
   pipx_exec uninstall jin >/dev/null || true
