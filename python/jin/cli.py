@@ -5,6 +5,7 @@ import os
 import traceback
 
 from .cli_support import (
+    command_benchmark_install,
     command_auth_rotate,
     command_auth_status,
     command_ci_check,
@@ -48,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--env-file", default=".env")
     init_parser.add_argument("--write", action="store_true", help="Write the generated config to .env.")
     init_parser.add_argument("--force", action="store_true", help="Overwrite .env when used with --write.")
+    init_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Read-only readiness check for FastAPI + Jin with guided next steps.",
+    )
     init_parser.add_argument("--auth", action=argparse.BooleanOptionalAction, default=True)
     init_parser.add_argument("--interactive", action="store_true", help="Prompt for setup values instead of relying only on flags.")
     init_parser.add_argument("--open", action="store_true", help="Print the local console URLs after setup.")
@@ -166,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
         cmd.add_argument("--strict", action="store_true", help="Return a non-zero exit code when checks report warnings or errors.")
         if name == "doctor":
             cmd.add_argument("--fix", action="store_true", help="Apply safe local fixes like creating a starter .env and DuckDB schema.")
+            cmd.add_argument("--deep", action="store_true", help="Include deep diagnostics for install, discovery, and runtime readiness.")
         cmd.set_defaults(handler=handler)
 
     endpoints_parser = subparsers.add_parser("endpoints", help="Inspect discovered APIs.")
@@ -285,6 +292,30 @@ def build_parser() -> argparse.ArgumentParser:
     ci_check.add_argument("--format", choices=["table", "json"], default="table")
     ci_check.add_argument("--fail-on-issues", action="store_true", help="Fail when active issues exist.")
     ci_check.set_defaults(handler=command_ci_check)
+
+    benchmark_parser = subparsers.add_parser("benchmark", help="Run local Jin benchmarks.")
+    benchmark_subparsers = benchmark_parser.add_subparsers(dest="benchmark_command")
+    benchmark_install = benchmark_subparsers.add_parser(
+        "install",
+        help="Measure local install time for fast path and optional native-build baseline.",
+    )
+    benchmark_install.add_argument("--python", default="python3", help="Python executable used to create venvs.")
+    benchmark_install.add_argument("--runs", type=int, default=1, help="Number of benchmark runs per mode.")
+    benchmark_install.add_argument("--tool", choices=["auto", "uv", "pip"], default="auto")
+    benchmark_install.add_argument(
+        "--with-deps",
+        action="store_true",
+        help="Include dependency installation in benchmark timings.",
+    )
+    benchmark_install.add_argument(
+        "--native-baseline",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include native compile benchmark as legacy baseline approximation.",
+    )
+    benchmark_install.add_argument("--format", choices=["table", "json"], default="table")
+    benchmark_install.add_argument("--keep-temp", action="store_true", help="Keep temp benchmark directories for inspection.")
+    benchmark_install.set_defaults(handler=command_benchmark_install)
 
     return parser
 

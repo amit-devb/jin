@@ -6,6 +6,7 @@ from pathlib import Path
 import duckdb
 
 from jin.cli import main
+import jin.cli_support as cli_support
 
 
 APP_MODULE = """
@@ -53,6 +54,21 @@ async def revenue(retailer: str, period: str, value: float = 100.0) -> RevenuePa
     return RevenuePayload(retailer=retailer, period=period, revenue=value)
 """
 
+APP_MODULE_ANNOTATED_ONLY = """
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+class RevenueRow(BaseModel):
+    retailer: str
+    revenue: float
+
+app = FastAPI()
+
+@app.get("/api/annotated")
+async def annotated() -> list[RevenueRow]:
+    return [RevenueRow(retailer="amazon", revenue=100.0)]
+"""
+
 
 FACTORY_APP_MODULE = """
 from fastapi import FastAPI
@@ -80,6 +96,13 @@ def write_demo_module_with_jin(tmp_path: Path, monkeypatch) -> str:
     module_path.write_text(APP_MODULE_WITH_JIN)
     monkeypatch.syspath_prepend(str(tmp_path))
     return "demo_cli_jin_app:app"
+
+
+def write_annotated_only_module(tmp_path: Path, monkeypatch) -> str:
+    module_path = tmp_path / "demo_cli_annotated_app.py"
+    module_path.write_text(APP_MODULE_ANNOTATED_ONLY)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return "demo_cli_annotated_app:app"
 
 
 def test_cli_patch_fastapi_inserts_middleware(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -304,6 +327,53 @@ def test_cli_init_with_invalid_app_prints_helpful_error(tmp_path: Path, capsys) 
     assert "use a valid import path" in output
 
 
+def test_cli_init_check_with_invalid_app_prints_guidance_not_error(tmp_path: Path, capsys) -> None:
+    env_path = tmp_path / ".env"
+    exit_code = main(
+        [
+            "init",
+            "--check",
+            "--env-file",
+            str(env_path),
+            "--app",
+            "missing.module:app",
+        ]
+    )
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Jin init check" in output
+    assert "Guidance:" in output
+    assert "could not be loaded" in output
+    assert "jin doctor --deep" in output
+
+
+def test_cli_init_check_auto_detects_app_and_guides_mounting(tmp_path: Path, monkeypatch, capsys) -> None:
+    main_py = tmp_path / "main.py"
+    main_py.write_text(
+        "\n".join(
+            [
+                "from fastapi import FastAPI",
+                "",
+                "app = FastAPI()",
+                "",
+                "@app.get('/health')",
+                "async def health():",
+                "    return {'ok': True}",
+                "",
+            ]
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    exit_code = main(["init", "--check"])
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Auto-detected FastAPI app: main:app" in output
+    assert "jin_mounted" in output
+    assert "Guidance:" in output
+
+
 def test_cli_init_serve_check_warns_when_jin_not_mounted(tmp_path: Path, monkeypatch, capsys) -> None:
     app_path = write_demo_module(tmp_path, monkeypatch)
     db_path = tmp_path / "serve-check.duckdb"
@@ -430,6 +500,103 @@ def test_cli_doctor_json_output(tmp_path: Path, monkeypatch, capsys) -> None:
     assert payload["checks"]["duckdb_schema"] == "ok"
     assert payload["checks"]["app_import"] == "ok"
     assert payload["checks"]["discovered_endpoints"] == "2"
+
+
+def test_cli_doctor_deep_json_uses_return_annotation_discovery(tmp_path: Path, monkeypatch, capsys) -> None:
+    app_path = write_annotated_only_module(tmp_path, monkeypatch)
+    db_path = tmp_path / "doctor-deep.duckdb"
+    exit_code = main(
+        [
+            "doctor",
+            "--db-path",
+            str(db_path),
+            "--app",
+            app_path,
+            "--deep",
+            "--format",
+            "json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["checks"]["app_import"] == "ok"
+    assert payload["checks"]["discovered_endpoints"] == "1"
+    deep = payload["deep"]
+    assert deep["runtime"]["db_exists"] is True
+    assert deep["discovery"]["summary"]["total"] == 1
+    assert deep["discovery"]["summary"]["ready"] == 1
+    assert deep["discovery"]["summary"]["runtime_infer"] == 0
+    assert deep["discovery"]["problem_endpoints"] == []
+
+
+def test_cli_benchmark_install_json_reports_speedup(tmp_path: Path, monkeypatch, capsys) -> None:
+    created_dirs: list[Path] = []
+    call_state = {"fast": 0, "native": 0}
+
+    def fake_mkdtemp(prefix: str = "") -> str:
+        path = tmp_path / f"{prefix}{len(created_dirs) + 1}"
+        path.mkdir(parents=True, exist_ok=True)
+        created_dirs.append(path)
+        return str(path)
+
+    def fake_fast(**_kwargs):
+        call_state["fast"] += 1
+        return {"tool": "uv", "install_seconds": 6.0}
+
+    def fake_native(**_kwargs):
+        call_state["native"] += 1
+        return {"available": True, "reason": None, "native_compile_seconds": 60.0}
+
+    monkeypatch.setattr(cli_support.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(cli_support, "_benchmark_fast_install_once", fake_fast)
+    monkeypatch.setattr(cli_support, "_benchmark_native_baseline_once", fake_native)
+    monkeypatch.setattr(cli_support.shutil, "rmtree", lambda *_args, **_kwargs: None)
+
+    exit_code = main(["benchmark", "install", "--tool", "uv", "--runs", "2", "--format", "json"])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["tool"] == "uv"
+    assert payload["runs"] == 2
+    assert payload["fast_path"]["avg_install_seconds"] == 6.0
+    assert payload["legacy_native_baseline"]["avg_native_compile_seconds"] == 60.0
+    assert payload["estimated_reduction_pct_vs_native"] == 90.0
+    assert payload["estimated_speedup_x_vs_native"] == 10.0
+    assert call_state["fast"] == 2
+    assert call_state["native"] == 2
+
+
+def test_cli_benchmark_install_without_native_baseline(tmp_path: Path, monkeypatch, capsys) -> None:
+    run_calls = {"fast": 0, "native": 0}
+
+    def fake_mkdtemp(prefix: str = "") -> str:
+        path = tmp_path / f"{prefix}single"
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    def fake_fast(**_kwargs):
+        run_calls["fast"] += 1
+        return {"tool": "pip", "install_seconds": 3.5}
+
+    def fake_native(**_kwargs):
+        run_calls["native"] += 1
+        return {"available": True, "reason": None, "native_compile_seconds": 10.0}
+
+    monkeypatch.setattr(cli_support.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(cli_support, "_benchmark_fast_install_once", fake_fast)
+    monkeypatch.setattr(cli_support, "_benchmark_native_baseline_once", fake_native)
+    monkeypatch.setattr(cli_support.shutil, "rmtree", lambda *_args, **_kwargs: None)
+
+    exit_code = main(
+        ["benchmark", "install", "--tool", "pip", "--runs", "1", "--no-native-baseline", "--format", "table"]
+    )
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Install benchmark" in output
+    assert "Fast path runs:" in output
+    assert "Native baseline runs:" not in output
+    assert run_calls["fast"] == 1
+    assert run_calls["native"] == 0
 
 
 def test_cli_report_summary_and_ci_check_json(tmp_path: Path, monkeypatch, capsys) -> None:

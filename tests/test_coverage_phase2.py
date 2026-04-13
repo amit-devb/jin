@@ -81,6 +81,7 @@ def test_router_native_detail_and_anomaly_action_paths(client, monkeypatch: pyte
                     "actual_value": 120.0,
                     "expected_value": 100.0,
                     "pct_change": 20.0,
+                    "detection_method": "reconciliation",
                     "status": "active",
                     "incident_status": "active",
                     "snoozed_until": None,
@@ -347,7 +348,7 @@ def test_middleware_helper_paths_cover_invocation_and_matching(app, tmp_path: Pa
     assert middleware._coerce_number("12.5") == 12.5
     assert middleware._coerce_number("x") is None
 
-    assert "matched the uploaded baseline" in middleware._comparison_reason(
+    assert "matched the uploaded reference" in middleware._comparison_reason(
         "amount",
         100,
         100,
@@ -625,7 +626,20 @@ def test_router_native_branches_for_reports_upload_checks_and_anomalies(
         return json.dumps({"ok": True, "rows": 1, "imported": 1})
 
     def native_issues_list(_db_path, _endpoint_path=None, _status=None):
-        return json.dumps([{"id": 1, "endpoint_path": endpoint_path, "status": "active"}])
+        return json.dumps(
+            [
+                {
+                    "id": 1,
+                    "endpoint_path": endpoint_path,
+                    "kpi_field": "data.RSV",
+                    "actual_value": 110.0,
+                    "expected_value": 100.0,
+                    "pct_change": 10.0,
+                    "detection_method": "reconciliation",
+                    "status": "active",
+                }
+            ]
+        )
 
     monkeypatch.setattr(router_module, "config_show", native_config_show)
     monkeypatch.setattr(router_module, "references_export", native_references_export)
@@ -706,7 +720,16 @@ def test_router_native_branches_for_reports_upload_checks_and_anomalies(
             {
                 "anomalies": [
                     {"id": 10, "status": "resolved", "incident_status": "resolved"},
-                    {"id": 11, "status": "active", "incident_status": "active"},
+                    {
+                        "id": 11,
+                        "status": "active",
+                        "incident_status": "active",
+                        "kpi_field": "data.RSV",
+                        "actual_value": 111.0,
+                        "expected_value": 100.0,
+                        "pct_change": 11.0,
+                        "detection_method": "reconciliation",
+                    },
                 ]
             }
         )

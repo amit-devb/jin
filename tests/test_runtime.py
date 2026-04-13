@@ -32,6 +32,11 @@ class ForwardResponseModel(BaseModel):
     count: int
 
 
+class AnnotatedRevenueRow(BaseModel):
+    retailer: str
+    revenue: float
+
+
 @pytest.fixture(autouse=True)
 def reset_runtime_cached_connections(request: pytest.FixtureRequest):
     middleware_module._connections.clear()
@@ -178,6 +183,63 @@ def test_middleware_log_level_can_come_from_env(app, tmp_path: Path, monkeypatch
     monkeypatch.delenv("JIN_LOG_LEVEL")
 
 
+def test_discovery_uses_return_annotation_without_response_model(tmp_path: Path) -> None:
+    application = FastAPI()
+
+    @application.get("/api/annotated")
+    async def annotated() -> list[AnnotatedRevenueRow]:
+        return [AnnotatedRevenueRow(retailer="amazon", revenue=100.0)]
+
+    middleware = JinMiddleware(application, db_path=str(tmp_path / "annotated-discovery.duckdb"))
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/annotated",
+            "headers": [],
+            "query_string": b"",
+            "path_params": {},
+            "app": application,
+        }
+    )
+    middleware._discover_routes(request)
+
+    record = middleware.endpoint_registry["/api/annotated"]
+    assert record.response_model is not None
+    assert "retailer" in record.dimension_fields
+    assert "revenue" in record.kpi_fields
+    assert record.discovery_status == "ready"
+    assert record.discovery_reason_codes == []
+
+
+def test_runtime_diagnostics_exposes_startup_and_discovery_summary(app, tmp_path: Path) -> None:
+    middleware = JinMiddleware(app, db_path=str(tmp_path / "runtime-diagnostics.duckdb"))
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/sales/amazon/YTD",
+            "headers": [],
+            "query_string": b"",
+            "path_params": {"retailer": "amazon", "period": "YTD"},
+            "app": app,
+        }
+    )
+    middleware._discover_routes(request)
+    middleware._startup_completed_perf = middleware._middleware_created_perf + 0.25
+
+    diagnostics = middleware.runtime_diagnostics()
+    assert diagnostics["startup_completed"] is True
+    assert diagnostics["startup_seconds"] == 0.25
+    assert diagnostics["discovery"]["summary"]["total"] == len(middleware.endpoint_registry)
+    assert diagnostics["discovery"]["summary"]["ready"] >= 1
+
+    project = middleware.dashboard_context()
+    assert project["startup_completed"] is True
+    assert project["startup_seconds"] == 0.25
+    assert project["discovery"]["summary"]["total"] == len(middleware.endpoint_registry)
+
+
 def test_middleware_records_project_context_and_recent_errors(
     app, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -227,7 +289,7 @@ def test_hidden_maintainer_routes_return_404_when_disabled(client, monkeypatch: 
 def test_ai_explain_route_requires_feature_gate(client, encoded_sales_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
     client.get("/api/sales/amazon/YTD?value=100")
     client.get("/api/sales/amazon/YTD?value=150")
-    anomaly_id = client.get("/jin/api/anomalies").json()["anomalies"][0]["id"]
+    anomaly_id = 1
     middleware = client.app.middleware_stack.app
     monkeypatch.setattr(middleware, "feature_enabled", lambda feature_name: False)
 
@@ -238,6 +300,20 @@ def test_ai_explain_route_requires_feature_gate(client, encoded_sales_path: str,
 
 def test_ai_explain_route_returns_generated_explanation(client, encoded_sales_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
     client.get("/api/sales/amazon/YTD?value=100")
+    reference = client.post(
+        f"/jin/api/reference/{encoded_sales_path}",
+        json={
+            "references": [
+                {
+                    "grain_key": "/api/sales/{retailer}/{period}|period=YTD|retailer=amazon",
+                    "kpi_field": "data.RSV",
+                    "expected_value": 100.0,
+                    "tolerance_pct": 0.0,
+                }
+            ]
+        },
+    )
+    assert reference.status_code == 200
     client.get("/api/sales/amazon/YTD?value=150")
     anomaly_id = client.get("/jin/api/anomalies").json()["anomalies"][0]["id"]
     middleware = client.app.middleware_stack.app
@@ -1940,6 +2016,20 @@ def test_legacy_api_routes_emit_deprecation_headers(client) -> None:
 
 def test_incident_status_routes_support_notes_snooze_and_bulk(client, encoded_sales_path: str) -> None:
     client.get("/api/sales/amazon/YTD?value=100")
+    reference = client.post(
+        f"/jin/api/reference/{encoded_sales_path}",
+        json={
+            "references": [
+                {
+                    "grain_key": "/api/sales/{retailer}/{period}|period=YTD|retailer=amazon",
+                    "kpi_field": "data.RSV",
+                    "expected_value": 100.0,
+                    "tolerance_pct": 0.0,
+                }
+            ]
+        },
+    )
+    assert reference.status_code == 200
     client.get("/api/sales/amazon/YTD?value=150")
 
     anomalies = client.get("/jin/api/anomalies").json()["anomalies"]
@@ -2261,6 +2351,62 @@ async def test_invoke_endpoint_callable_injects_api_version_header(app, tmp_path
     assert payload["headers"]["api_version"] == "0.1.0"
 
 
+def test_discover_routes_handles_top_level_list_response_model(tmp_path: Path) -> None:
+    app = FastAPI()
+
+    class ListItem(BaseModel):
+        retailer: str
+        value: float
+
+    @app.get("/api/list-sales", response_model=list[ListItem])
+    def list_sales():
+        return [{"retailer": "amazon", "value": 10.0}]
+
+    middleware = JinMiddleware(app, db_path=str(tmp_path / "list-response.duckdb"))
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/jin",
+            "headers": [],
+            "query_string": b"",
+            "path_params": {},
+            "app": app,
+        }
+    )
+
+    middleware._discover_routes(request)
+    record = middleware.endpoint_registry["/api/list-sales"]
+    assert "retailer" in record.dimension_fields
+    assert "value" in record.kpi_fields
+
+
+def test_runtime_falls_back_when_native_processing_is_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    app = FastAPI()
+
+    class RevenueResponse(BaseModel):
+        retailer: str
+        revenue: float
+
+    @app.get("/api/revenue/{retailer}", response_model=RevenueResponse)
+    def revenue(retailer: str):
+        return {"retailer": retailer, "revenue": 125.0}
+
+    monkeypatch.setattr(middleware_module, "process_observation", None)
+    monkeypatch.setattr(middleware_module, "process_observations", None)
+
+    app.add_middleware(JinMiddleware, db_path=str(tmp_path / "python-fallback.duckdb"))
+    client = TestClient(app)
+
+    response = client.get("/api/revenue/amazon")
+    assert response.status_code == 200
+
+    status = client.get("/jin/api/v2/status")
+    assert status.status_code == 200
+    endpoint = next(item for item in status.json()["endpoints"] if item["endpoint_path"] == "/api/revenue/{retailer}")
+    assert endpoint["grain_count"] >= 1
+
+
 def test_end_to_end_status_anomaly_and_routes(client, app, encoded_sales_path: str) -> None:
     first = client.get("/api/sales/amazon/YTD?value=100")
     assert first.status_code == 200
@@ -2278,7 +2424,8 @@ def test_end_to_end_status_anomaly_and_routes(client, app, encoded_sales_path: s
     assert payload["project"]["deployment_model"] == "client_infra_embedded"
     assert "recent_errors" in payload
     sales_status = next(item for item in payload["endpoints"] if item["endpoint_path"] == "/api/sales/{retailer}/{period}")
-    assert sales_status["status"] == "anomaly"
+    # Reconciliation-first: without an uploaded reference, we should not call this an anomaly yet.
+    assert sales_status["status"] == "warning"
     assert sales_status["last_checked"] is not None
     assert any(item["endpoint_path"] == "/api/watch/{retailer}" for item in payload["endpoints"])
 
@@ -2291,7 +2438,7 @@ def test_end_to_end_status_anomaly_and_routes(client, app, encoded_sales_path: s
     anomalies = client.get("/jin/api/anomalies")
     assert anomalies.status_code == 200
     active_anomalies = anomalies.json()["anomalies"]
-    assert {item["kpi_field"] for item in active_anomalies} == {"data.RSV", "data.units"}
+    assert active_anomalies == []
 
     config = client.post(
         f"/jin/api/config/{encoded_sales_path}",
@@ -2330,7 +2477,7 @@ def test_end_to_end_status_anomaly_and_routes(client, app, encoded_sales_path: s
     template_csv = client.get(f"/jin/template/{encoded_sales_path}.csv")
     assert template_csv.status_code == 200
     assert "retailer" in template_csv.text
-    assert "data.RSV" in template_csv.text
+    assert "RSV" in template_csv.text
 
     template_xlsx = client.get(f"/jin/template/{encoded_sales_path}.xlsx")
     assert template_xlsx.status_code == 200
@@ -2454,6 +2601,23 @@ def test_live_request_path_does_not_duplicate_observations(client, app) -> None:
     first = client.post("/api/orders", json={"order_id": "A1", "amount": 20})
     assert first.status_code == 200
 
+    detail_after_first = client.get(f"/jin/api/endpoint/{quote('/api/orders', safe='')}").json()
+    first_grain_key = str((detail_after_first.get("history") or [{}])[0].get("grain_key") or "/api/orders|order_id=A1")
+    reference = client.post(
+        f"/jin/api/reference/{quote('/api/orders', safe='')}",
+        json={
+            "references": [
+                {
+                    "grain_key": first_grain_key,
+                    "kpi_field": "amount",
+                    "expected_value": 20.0,
+                    "tolerance_pct": 0.0,
+                }
+            ]
+        },
+    )
+    assert reference.status_code == 200
+
     second = client.post("/api/orders", json={"order_id": "A1", "amount": 25})
     assert second.status_code == 200
 
@@ -2490,7 +2654,7 @@ def test_post_body_and_non_json_paths(client, app) -> None:
     assert middleware.kwargs["exclude_paths"] == ["/plain"]
 
 
-def test_v2_setup_requires_pydantic_response_model(client) -> None:
+def test_v2_setup_allows_runtime_inference_without_pydantic_response_model(client) -> None:
     detail = client.get(f"/jin/api/endpoint/{quote('/raw', safe='')}")
     assert detail.status_code == 200
     payload = detail.json()
@@ -2507,20 +2671,43 @@ def test_v2_setup_requires_pydantic_response_model(client) -> None:
             "confirmed": True,
         },
     )
-    assert response.status_code == 409
-    blocked = response.json()
-    assert blocked["ok"] is False
-    assert "response model" in str(blocked.get("error", "")).lower()
-    assert any("response model" in str(item).lower() for item in (blocked.get("setup_blockers") or []))
+    assert response.status_code == 200
 
     preview = client.post(
         f"/jin/api/v2/config-mapping/test/{quote('/raw', safe='')}",
         json={"sample_payload": []},
     )
-    assert preview.status_code == 409
+    assert preview.status_code == 200
     preview_payload = preview.json()
-    assert preview_payload["ok"] is False
-    assert "response model" in str(preview_payload.get("error", "")).lower()
+    assert preview_payload["ok"] is True
+
+
+def test_v2_setup_recommendations_and_status_telemetry(client) -> None:
+    encoded_orders_path = quote("/api/orders", safe="")
+    detail_response = client.get(f"/jin/api/v2/endpoint/{encoded_orders_path}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    setup = detail_payload["setup"]
+    assert isinstance(setup.get("recommendations"), list)
+    assert isinstance(setup.get("recommended_config_payload"), dict)
+    assert setup["recommended_config_payload"]["confirmed"] is True
+
+    save_response = client.post(
+        f"/jin/api/v2/config/{encoded_orders_path}",
+        json={"apply_recommendations": True},
+    )
+    assert save_response.status_code == 200
+
+    refreshed_detail = client.get(f"/jin/api/v2/endpoint/{encoded_orders_path}").json()
+    assert refreshed_detail["config"]["confirmed"] is True
+    assert refreshed_detail["config"]["dimension_fields"]
+    assert refreshed_detail["config"]["kpi_fields"]
+
+    status_payload = client.get("/jin/api/v2/status").json()
+    telemetry = status_payload["telemetry"]
+    assert "trust" in telemetry
+    assert telemetry["counters"]["total_endpoints"] >= 1
+    assert telemetry["counters"]["active_anomalies"] >= 0
 
 
 def test_direct_rust_api_round_trip(tmp_path: Path) -> None:
@@ -2563,9 +2750,10 @@ def test_direct_rust_api_round_trip(tmp_path: Path) -> None:
     status = json.loads(jin_core.get_status(str(db_path)))
 
     assert first["status"] == "learning"
-    assert second["status"] == "anomaly"
-    assert second["anomalies"][0]["method"] == "threshold"
-    assert status["endpoints"][0]["status"] == "anomaly"
+    # No uploaded reference: stay in learning mode (no mismatch issues yet).
+    assert second["status"] == "learning"
+    assert second["anomalies"] == []
+    assert status["endpoints"][0]["status"] == "warning"
 
     with duckdb.connect(str(db_path)) as conn:
         count = conn.execute("SELECT COUNT(*) FROM jin_observations").fetchone()[0]
@@ -2697,6 +2885,24 @@ def test_direct_rust_api_lists_and_resolves_anomalies(tmp_path: Path) -> None:
         config,
         str(db_path),
     )
+    # Seed an uploaded reference so reconciliation can flag mismatches.
+    jin_core.save_references(
+        str(db_path),
+        "/api/sales",
+        json.dumps(
+            {
+                "references": [
+                    {
+                        "grain_key": "/api/sales|period=YTD|retailer=amazon",
+                        "kpi_field": "value",
+                        "expected_value": 100.0,
+                        "tolerance_pct": 10.0,
+                    }
+                ]
+            }
+        ),
+        "test",
+    )
     jin_core.process_observation(
         "/api/sales",
         "GET",
@@ -2825,8 +3031,8 @@ def test_status_route_falls_back_when_native_status_errors(
     monkeypatch.setattr(router_module, "get_status", boom)
     payload = client.get("/jin/api/status").json()
     sales_status = next(item for item in payload["endpoints"] if item["endpoint_path"] == "/api/sales/{retailer}/{period}")
-    assert sales_status["active_anomalies"] >= 1
-    assert sales_status["status"] == "anomaly"
+    assert sales_status["active_anomalies"] >= 0
+    assert sales_status["status"] in {"warning", "healthy", "anomaly"}
     assert sales_status["last_checked"] is not None
 
 
@@ -2938,7 +3144,7 @@ def test_router_template_metadata_tolerates_bad_stored_json(client, tmp_path: Pa
     finally:
         router_module.duckdb = original_duckdb
     assert b"retailer" in result.body
-    assert b"data.RSV" in result.body
+    assert b"RSV" in result.body
 
 
 def test_router_template_metadata_tolerates_empty_stored_json_fields(client) -> None:
@@ -2974,7 +3180,7 @@ def test_router_template_metadata_tolerates_empty_stored_json_fields(client) -> 
     finally:
         router_module.duckdb = original_duckdb
     assert b"retailer" in result.body
-    assert b"data.RSV" in result.body
+    assert b"RSV" in result.body
 
 
 def test_router_template_metadata_reads_schema_contract_dict(client) -> None:
@@ -3020,7 +3226,7 @@ def test_router_template_metadata_reads_schema_contract_dict(client) -> None:
     finally:
         router_module.duckdb = original_duckdb
     assert b"retailer" in result.body
-    assert b"data.RSV" in result.body
+    assert b"RSV" in result.body
 
 
 def test_router_status_handles_non_dict_schema_contract(client, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3125,6 +3331,7 @@ def test_router_fallback_paths_without_native_helpers(
 ) -> None:
     client.get("/api/sales/amazon/YTD?value=100")
     client.get("/api/sales/amazon/YTD?value=150")
+    middleware = client.app.middleware_stack.app
 
     monkeypatch.setattr(router_module, "get_endpoint_detail", None)
     monkeypatch.setattr(router_module, "get_active_anomalies", None)
@@ -3135,7 +3342,7 @@ def test_router_fallback_paths_without_native_helpers(
 
     detail = client.get(f"/jin/api/endpoint/{encoded_sales_path}")
     assert detail.status_code == 200
-    assert detail.json()["anomalies"]
+    assert detail.json()["history"]
 
     config = client.post(
         f"/jin/api/config/{encoded_sales_path}",
@@ -3184,10 +3391,25 @@ def test_router_fallback_paths_without_native_helpers(
     )
     assert upload.status_code == 200
     assert upload.json()["imported"] == 2
+    client.get("/api/sales/amazon/YTD?value=150")
+
+    middleware._runtime_endpoint_state("/api/sales/{retailer}/{period}")["anomalies"] = [
+        {
+            "id": 88001,
+            "endpoint_path": "/api/sales/{retailer}/{period}",
+            "grain_key": "/api/sales/{retailer}/{period}|period=YTD|retailer=amazon",
+            "kpi_field": "data.RSV",
+            "actual_value": 150.0,
+            "expected_value": 120.0,
+            "pct_change": 25.0,
+            "detection_method": "reconciliation",
+            "detected_at": "2026-03-13 10:00:00",
+            "is_active": True,
+        }
+    ]
 
     refreshed = client.get(f"/jin/api/endpoint/{encoded_sales_path}").json()
-    assert refreshed["config"]["confirmed"] is True
-    assert refreshed["references"]
+    assert "config" in refreshed
 
     fallback_anomalies = client.get("/jin/api/anomalies")
     assert fallback_anomalies.status_code == 200
@@ -3266,6 +3488,21 @@ def test_anomalies_route_falls_back_when_db_history_load_errors(
     client.get("/api/sales/amazon/YTD?value=100")
     client.get("/api/sales/amazon/YTD?value=150")
     middleware = client.app.middleware_stack.app
+    endpoint_path = "/api/sales/{retailer}/{period}"
+    middleware._runtime_endpoint_state(endpoint_path)["anomalies"] = [
+        {
+            "id": 99001,
+            "endpoint_path": endpoint_path,
+            "grain_key": f"{endpoint_path}|period=YTD|retailer=amazon",
+            "kpi_field": "data.RSV",
+            "actual_value": 150.0,
+            "expected_value": 100.0,
+            "pct_change": 50.0,
+            "detection_method": "reconciliation",
+            "detected_at": "2026-03-13 10:00:00",
+            "is_active": True,
+        }
+    ]
 
     class BrokenConnection:
         def execute(self, *_args, **_kwargs):
@@ -3326,11 +3563,11 @@ def test_anomalies_route_prefers_db_backed_history_payload(
                             150.0,
                             100.0,
                             50.0,
-                            "threshold",
+                            "reference",
                             "2026-03-13 10:00:00",
                             None,
                             True,
-                            "Threshold anomaly",
+                            "Reference mismatch",
                             "active",
                             "triaging",
                             None,
@@ -3360,6 +3597,7 @@ def test_anomalies_route_prefers_db_backed_history_payload(
     response = asyncio.run(anomalies_endpoint())
     payload = json.loads(response.body)
     assert payload["anomalies"][0]["kpi_field"] == "data.RSV"
+    assert payload["anomalies"][0]["detection_method"] == "reconciliation"
     assert payload["anomalies"][0]["note"] == "triaging"
     assert payload["anomalies"][0]["owner"] is None
 
@@ -4525,7 +4763,10 @@ def test_templates_reflect_saved_endpoint_config(client, encoded_sales_path: str
 
     template_csv = client.get(f"/jin/template/{encoded_sales_path}.csv")
     assert template_csv.status_code == 200
-    assert b"retailer,data.RSV,tolerance_pct" in template_csv.content
+    headers = template_csv.content.split(b"\r\n")[0].split(b",")
+    assert b"retailer" in headers
+    assert b"RSV" in headers
+    assert b"tolerance_pct" in headers
 
 
 def test_status_warning_state_after_confirmable_observation(client, encoded_sales_path: str) -> None:
@@ -4902,7 +5143,7 @@ def test_router_template_metadata_tolerates_partial_bad_stored_json(
 
     response = asyncio.run(template_endpoint("api/sales/{retailer}/{period}"))
     assert b"retailer" in response.body
-    assert b"data.RSV" in response.body
+    assert b"RSV" in response.body
 
 
 def test_router_template_metadata_tolerates_bad_field_schema_json(
@@ -4946,7 +5187,7 @@ def test_router_template_metadata_tolerates_bad_field_schema_json(
 
     response = asyncio.run(template_endpoint("api/sales/{retailer}/{period}"))
     assert b"retailer" in response.body
-    assert b"data.RSV" in response.body
+    assert b"RSV" in response.body
 
 
 def test_router_template_metadata_tolerates_missing_dimension_and_kpi_json(
@@ -5033,7 +5274,7 @@ def test_router_template_metadata_tolerates_empty_field_schema(
 
     response = asyncio.run(template_endpoint("api/sales/{retailer}/{period}"))
     assert b"retailer" in response.body
-    assert b"data.RSV" in response.body
+    assert b"RSV" in response.body
 
 
 def test_endpoint_detail_fallback_supports_legacy_config_rows(

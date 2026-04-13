@@ -1,11 +1,12 @@
 # Jin Docs
 
-Jin is a small FastAPI product for monitoring API response quality and reviewing issues in one place.
+Jin is a Rust-first, drop-in observability and reconciliation engine for FastAPI Data Products. It empowers Product Owners (POs) to seamlessly track and validate complex response data using a powerful local dashboard.
 
 ## Read This First
 
-- [Why Jin](vision.md)
+- [Why Jin (Vision)](vision.md)
 - [Getting Started](getting-started.md)
+- [Architecture Blueprint](architecture.md)
 - [Configuration Guide](configuration.md)
 - [Data Shape Guide](data-contract.md)
 - [Incident Workflow](incidents.md)
@@ -14,4 +15,4 @@ Jin is a small FastAPI product for monitoring API response quality and reviewing
 
 ## One-Line Summary
 
-Install Jin, add the middleware, define your response model, upload baselines, then watch the dashboard at `/jin`.
+Install Jin, attach the edge-native Middleware to your FastAPI app, configure business KPI Grains, upload your reality-check references (CSVs), and let Jin do the heavy lifting in the background at `/jin`.

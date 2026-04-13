@@ -59,8 +59,8 @@ def reseed():
     for i in range(5):
         client.get("/api/watch/amazon")
 
-    # 5. Inject Config and Baselines (References) via jin_core
-    print("Injecting Config and Baselines via jin_core...")
+    # 5. Inject config + reference targets via jin_core
+    print("Injecting config + reference targets via jin_core...")
     import jin_core
     jin_core.init_db(DB_PATH)
     

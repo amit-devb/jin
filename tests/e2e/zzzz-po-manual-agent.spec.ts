@@ -26,12 +26,20 @@ function csvCell(value: string | number): string {
   return text;
 }
 
-function rowsToCsv(rows: Array<Array<string | number>>): Buffer {
-  const lines = rows.map((row) => row.map((cell) => csvCell(cell)).join(','));
-  return Buffer.from(`${lines.join('\n')}\n`, 'utf-8');
+function utf8Bytes(text: string): Uint8Array {
+  // Minimal UTF-8 encoder so this spec does not require Node's Buffer types.
+  const encoded = unescape(encodeURIComponent(text));
+  const out = new Uint8Array(encoded.length);
+  for (let i = 0; i < encoded.length; i += 1) out[i] = encoded.charCodeAt(i);
+  return out;
 }
 
-function buildRevenueMismatchCsv(samples: RevenueSample[]): Buffer {
+function rowsToCsv(rows: Array<Array<string | number>>): Uint8Array {
+  const lines = rows.map((row) => row.map((cell) => csvCell(cell)).join(','));
+  return utf8Bytes(`${lines.join('\n')}\n`);
+}
+
+function buildRevenueMismatchCsv(samples: RevenueSample[]): Uint8Array {
   const rows: Array<Array<string | number>> = [
     [
       'endpoint',
@@ -61,7 +69,7 @@ function buildRevenueMismatchCsv(samples: RevenueSample[]): Buffer {
   return rowsToCsv(rows);
 }
 
-function buildInventoryMatchedCsv(sample: InventorySample): Buffer {
+function buildInventoryMatchedCsv(sample: InventorySample): Uint8Array {
   return rowsToCsv([
     [
       'endpoint',
@@ -170,12 +178,12 @@ async function configureInventoryApi(page: Page): Promise<void> {
   await expect.poll(() => new URL(page.url()).searchParams.get('y_tab')).toBe('uploads');
 }
 
-async function uploadCsv(page: Page, filename: string, csvBuffer: Buffer): Promise<void> {
+async function uploadCsv(page: Page, filename: string, csvBuffer: Uint8Array): Promise<void> {
   await expect(page.locator('#upload-file')).toBeVisible();
   await page.setInputFiles('#upload-file', {
     name: filename,
     mimeType: 'text/csv',
-    buffer: csvBuffer,
+    buffer: csvBuffer as any,
   });
   await page.click('#preview-upload-button');
   await expect(page.locator('#upload-preview-step')).toBeVisible();

@@ -104,6 +104,20 @@ pub struct ComparisonResult {
     pub actual: f64,
     pub expected: Option<f64>,
     pub delta: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tolerance_pct: Option<f64>,
+    pub reconciliation_status: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ReconciliationSummary {
+    pub total_checks: usize,
+    pub matched: usize,
+    pub mismatched: usize,
+    pub missing_reference: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,6 +128,7 @@ pub struct ProcessResult {
     pub kpi_json: Value,
     pub anomalies: Vec<AnomalyResult>,
     pub comparisons: Vec<ComparisonResult>,
+    pub reconciliation: ReconciliationSummary,
 }
 
 pub fn default_tolerance() -> f64 {

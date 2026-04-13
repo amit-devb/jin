@@ -121,27 +121,30 @@ def test_validate_upload_rows_po_format_missing_field_config() -> None:
 
 
 def test_validate_upload_rows_expected_fields_mismatch() -> None:
-    """Passing expected_fields that don't match the actual columns raises ValueError."""
+    """Extra columns should be ignored (with warnings) rather than hard-failing."""
     expected = [
         "endpoint", "dimension_fields", "kpi_fields",
         "grain_retailer", "expected_data.RSV", "tolerance_pct",
     ]
-    with pytest.raises(ValueError, match="Upload columns do not match template"):
-        validate_upload_rows(
-            [
-                {
-                    "endpoint": "/api/sales",
-                    "dimension_fields": "retailer",
-                    "kpi_fields": "data.RSV",
-                    "grain_retailer": "amazon",
-                    "expected_data.RSV": "100",
-                    "tolerance_pct": "10",
-                    "extra_col": "bad",  # unexpected column
-                }
-            ],
-            {"retailer", "data.RSV"},
-            expected_fields=expected,
-        )
+    dim_fields, kpi_fields, normalized, warnings = validate_upload_rows(
+        [
+            {
+                "endpoint": "/api/sales",
+                "dimension_fields": "retailer",
+                "kpi_fields": "data.RSV",
+                "grain_retailer": "amazon",
+                "expected_data.RSV": "100",
+                "tolerance_pct": "10",
+                "extra_col": "bad",  # unexpected column
+            }
+        ],
+        {"retailer", "data.RSV"},
+        expected_fields=expected,
+    )
+    assert dim_fields == ["retailer"]
+    assert kpi_fields == ["data.RSV"]
+    assert len(normalized) == 1
+    assert any("Ignored extra column" in str(w) for w in warnings)
 
 
 def test_validate_upload_rows_invalid_tolerance() -> None:

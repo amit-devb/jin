@@ -952,12 +952,12 @@ function buildReportCsvRows(reportPack: any): any[] {
   const healthSummary = summaryPayload.summary || {};
   const activeAnomalies = Array.isArray(summaryPayload.active_anomalies) ? summaryPayload.active_anomalies : [];
   const digestTotals = digestPayload.totals || {};
-  const endpointBaseline = endpointPayload?.baseline || {};
+  const endpointReferences = endpointPayload?.references || endpointPayload?.baseline || {};
   const recommendation = Number(healthSummary.anomalies || 0) > 0
     ? 'Review Issues next and resolve high-priority changes before sharing this report.'
     : Number(healthSummary.unconfirmed || 0) > 0
       ? 'Set Up APIs next and finish setup for unconfirmed endpoints.'
-      : 'Monitoring is stable. Share this report and keep the current baseline.';
+      : 'Monitoring is stable. Share this report and keep the current targets.';
 
   const rows: any[] = [
     {
@@ -996,9 +996,9 @@ function buildReportCsvRows(reportPack: any): any[] {
       row_type: 'endpoint_snapshot',
       endpoint_path: String(endpointPayload?.endpoint_path || reportPack?.endpoint_path || ''),
       endpoint_anomalies: Number(endpointPayload?.anomaly_count || 0),
-      endpoint_baseline_rows: Number(endpointBaseline?.total_reference_rows || 0),
-      endpoint_baseline_coverage_pct: Number(endpointBaseline?.coverage_pct || 0),
-      endpoint_baseline_apis_with_data: Number(endpointBaseline?.endpoints_with_baseline || 0),
+      endpoint_reference_rows: Number(endpointReferences?.total_reference_rows || 0),
+      endpoint_reference_coverage_pct: Number(endpointReferences?.coverage_pct || 0),
+      endpoint_reference_apis_with_data: Number(endpointReferences?.endpoints_with_baseline || 0),
     });
   }
 
@@ -1056,7 +1056,7 @@ function setCoreInsight(
 
 function setCheckInsightFromDetail(endpointPath: string, detail: any): void {
   const issues = (detail?.anomaly_history || []).filter((item: any) => String(item?.status || 'active') !== 'resolved');
-  const hasBaseline = Boolean((detail?.upload_activity || []).length > 0);
+  const hasTargets = Boolean((detail?.upload_activity || []).length > 0);
   const recentRuns = Array.isArray(detail?.recent_history) ? detail.recent_history.length : 0;
   if (issues.length > 0) {
     setCoreInsight(endpointPath, {
@@ -1069,14 +1069,14 @@ function setCheckInsightFromDetail(endpointPath: string, detail: any): void {
     });
     return;
   }
-  if (!hasBaseline) {
+  if (!hasTargets) {
     setCoreInsight(endpointPath, {
-      title: 'Insight: baseline still needed',
-      summary: 'Checks can run, but meaningful pass/fail insight needs an uploaded baseline for this API.',
+      title: 'Insight: targets still needed',
+      summary: 'Checks can run, but meaningful pass/fail insight needs an uploaded target file for this API.',
       kind: 'info',
       actionType: 'tab',
       actionValue: 'uploads',
-      actionLabel: 'Set Baseline',
+      actionLabel: 'Upload Targets',
     });
     return;
   }
@@ -1118,7 +1118,7 @@ function setUploadInsightFromAnalysis(endpointPath: string, analysis: any, impor
     );
   if (verdict === 'matched' && mismatched === 0 && failed === 0) {
     setCoreInsight(endpointPath, {
-      title: 'Insight: baseline upload is clean',
+      title: 'Insight: target upload is clean',
       summary: `Upload completed. ${matched} segment${matched === 1 ? '' : 's'} matched expected targets.`,
       kind: 'success',
       actionType: 'tab',
@@ -1222,7 +1222,7 @@ function uploadStageLabel(stage: string): string {
     case 'validating':
       return 'Validating rows';
     case 'importing':
-      return 'Saving baseline';
+      return 'Saving targets';
     case 'analyzing':
       return 'Running checks';
     case 'completed':
@@ -1346,7 +1346,7 @@ async function handleUploadJobCompletion(endpointPath: string, result: any): Pro
   } else {
     setCoreInsight(endpointPath, {
       title: 'Insight: upload completed',
-      summary: `Imported ${imported} reference row${imported === 1 ? '' : 's'}. Run checks to compare live data against this baseline.`,
+      summary: `Imported ${imported} reference row${imported === 1 ? '' : 's'}. Run checks to compare live data against these targets.`,
       kind: 'info',
       actionType: 'tab',
       actionValue: 'history',
@@ -1457,12 +1457,12 @@ async function monitorUploadJob(endpointPath: string, jobId: string, options: { 
           await handleUploadJobCompletion(endpointPath, job?.result || {});
           completionHandled = true;
           completionHandledAt = Date.now();
-          // Baseline import is done; keep "Check file" available even if deep validation continues.
+          // Target import is done; keep "Check file" available even if deep validation continues.
           if (state.selectedApi === endpointPath) {
             ui.previewUploadButton.disabled = false;
           }
           if (followupActive) {
-            showToast('Baseline imported. Running deep validation in the background.', 'success');
+            showToast('Targets imported. Running deep validation in the background.', 'success');
             await new Promise((resolve) => setTimeout(resolve, 2000));
             continue;
           }
@@ -1473,10 +1473,10 @@ async function monitorUploadJob(endpointPath: string, jobId: string, options: { 
           clearRememberedUploadJob(endpointPath);
           markDismissedUploadJob(endpointPath, jobId);
           if (state.selectedApi === endpointPath) {
-            ui.uploadFeedback.textContent = 'Baseline import completed. Deep validation tracker became stale; continue with Checks/Issues.';
+            ui.uploadFeedback.textContent = 'Target import completed. Deep validation tracker became stale; continue with Checks/Issues.';
           }
           if (!options.quiet) {
-            showToast('Baseline import is complete. Deep validation tracking was stale, so live polling stopped.', 'info');
+            showToast('Target import is complete. Deep validation tracking was stale, so live polling stopped.', 'info');
           }
           return;
         }
@@ -1561,7 +1561,7 @@ function renderViewGuide(): void {
   const selectedStatus = endpoints.find((item) => item.endpoint_path === state.selectedApi) || null;
   const selectedDetail = selectedApiDetail();
   const selectedConfirmed = selectedDetail?.operator_metadata?.confirmed ?? selectedStatus?.confirmed ?? false;
-  const selectedHasBaseline = Boolean(
+  const selectedHasTargets = Boolean(
     (selectedDetail?.upload_activity && selectedDetail.upload_activity.length > 0)
     || selectedStatus?.last_upload_at,
   );
@@ -1597,7 +1597,7 @@ function renderViewGuide(): void {
     }
   } else if (state.currentView === 'playbook') {
     if (maintainerMode) {
-      purpose = 'Use a guided PO flow: setup once, validate baselines, monitor drift, and report with confidence.';
+      purpose = 'Use a guided PO flow: setup once, validate targets, monitor drift, and report with confidence.';
       note = 'Start with setup workflow, then use Checks, Issues, and Reports for day-to-day operations.';
       actionLabel = 'Start With Register';
       action = () => {
@@ -1616,7 +1616,7 @@ function renderViewGuide(): void {
       action = () => clickNavView(unresolvedIssues.length > 0 ? 'incidents' : 'api');
     }
   } else if (state.currentView === 'api') {
-    purpose = 'Configure one API, set baseline targets, and run checks for that endpoint.';
+    purpose = 'Configure one API, upload targets, and run checks for that endpoint.';
     if (!state.selectedApi) {
       if (endpoints.length) {
         note = 'Choose one API from the left list to continue.';
@@ -1645,12 +1645,12 @@ function renderViewGuide(): void {
       note = `${state.selectedApi} still needs setup confirmation.`;
       actionLabel = 'Finish Setup';
       action = () => switchApiTab('configuration');
-    } else if (!selectedHasBaseline) {
-      note = `${state.selectedApi} has no uploaded baseline yet.`;
-      actionLabel = 'Upload Baseline';
+    } else if (!selectedHasTargets) {
+      note = `${state.selectedApi} has no uploaded targets yet.`;
+      actionLabel = 'Upload Targets';
       action = () => openUploadsTab();
     } else if (!selectedHasRuns) {
-      note = `${state.selectedApi} is configured and has baseline, but no check run yet.`;
+      note = `${state.selectedApi} is configured and has targets, but no check run yet.`;
       actionLabel = 'Open Monitor';
       action = () => switchApiTab('history');
     } else if (selectedOpenIssues > 0) {
@@ -1974,8 +1974,8 @@ async function activateLicense() {
 function renderShell() {
   const viewTitles = {
     overview: ['Overview', 'Start here to see project health and decide where to go next.'],
-    playbook: ['PO Guide', 'PO flow for setup, baseline targets, checks, issue review, and report packs.'],
-    api: ['APIs', state.selectedApi ? 'Pick one API, then follow Configure -> Baselines -> Checks.' : 'Pick one API, then follow Configure -> Baselines -> Checks.'],
+    playbook: ['PO Guide', 'PO flow for setup, target uploads, checks, issue review, and report packs.'],
+    api: ['APIs', state.selectedApi ? 'Pick one API, then follow Configure -> Uploads -> Checks.' : 'Pick one API, then follow Configure -> Uploads -> Checks.'],
     incidents: ['Issues', 'See the current issues and take the next step.'],
     errors: ['Errors', 'Problems and next steps.'],
     scheduler: ['Watches', 'See scheduled checks and run them when needed.'],
@@ -2122,12 +2122,6 @@ async function saveConfig() {
   if (!state.selectedApi) return;
   const detail = selectedApiDetail();
   if (!detail) return;
-  if (detail.response_model_present === false) {
-    const message = 'Define a Pydantic response model first. Jin needs the model to discover fields before setup can be saved.';
-    ui.configFeedback.textContent = message;
-    showToast(message, 'error');
-    return;
-  }
   const setup = detail.setup_config || detail.config || { dimension_fields: [], kpi_fields: [] };
   const dimensionFields = Array.isArray(setup.dimension_fields) ? setup.dimension_fields : [];
   const kpiFields = Array.isArray(setup.kpi_fields) ? setup.kpi_fields : [];
@@ -2185,6 +2179,17 @@ async function saveConfig() {
       const sampleSource = String(previewPayload?.sample_source || 'none');
       const sampleCount = Number(previewPayload?.sample_count || 0);
       const successCount = Number(previewPayload?.summary?.success_count || 0);
+      if (sampleCount === 0 && sampleSource === 'none') {
+        const apiKey = String(state.selectedApi || '');
+        if (apiKey && !state.mappingNoSamplesToastByApi?.[apiKey]) {
+          state.mappingNoSamplesToastByApi = state.mappingNoSamplesToastByApi || {};
+          state.mappingNoSamplesToastByApi[apiKey] = true;
+          showToast(
+            'Time mapping preview could not run yet (no JSON samples found). Fix: hit this API once while Jin is running, or paste a JSON sample payload in Configuration > Time mapping > Test. If this API has no time field, you can ignore this.',
+            'warning',
+          );
+        }
+      }
       if (sampleCount > 0 && successCount === 0 && sampleSource !== 'schema_example_rows') {
         const message = 'Time mapping could not parse sample rows yet. Setup can still be saved; mapping will validate after the first real check.';
         ui.configFeedback.textContent = message;
@@ -2238,7 +2243,7 @@ async function saveConfig() {
   if (response.ok) {
     state.currentApiTab = 'uploads';
     syncBrowserRoute('push');
-    showToast('Setup saved. Ready for baseline data.', 'success');
+    showToast('Setup saved. Ready for target data.', 'success');
     clearDismissedUploadJob(state.selectedApi);
   } else {
     ui.configFeedback.textContent = `Save failed: ${JSON.stringify(result)}`;
@@ -2255,24 +2260,38 @@ async function saveConfig() {
 
 (window as any).saveConfig = saveConfig;
 
-function baselineSetupBlockers(detail: any): string[] {
+function referenceSetupBlockers(detail: any): string[] {
+  // Prefer manual setup, fallback to auto-detected config for 'Child's Play' UX
   const setup = detail?.setup_config || detail?.config || {};
   const blockers: string[] = [];
   const dims = Array.isArray(setup?.dimension_fields) ? setup.dimension_fields : [];
   const kpis = Array.isArray(setup?.kpi_fields) ? setup.kpi_fields : [];
+  const timeField = String(setup?.time_field || '').trim();
+  
+  // High-fidelity fallback: if strict config is missing, check if discovery fields exist
+  const hasAutoFields = Array.isArray(detail?.fields) && detail.fields.some((f: any) => f.kind === 'dimension' || f.kind === 'kpi');
+  const isConfirmed = setup?.confirmed === true;
+
+  if (!dims.length && !hasAutoFields) blockers.push('Segment');
+  if (!kpis.length && !hasAutoFields) blockers.push('Metric');
+  
   const timeRequired = setupRequiresTimeField(detail, setup);
-  if (!dims.length) blockers.push('Segment');
-  if (!kpis.length) blockers.push('Metric');
-  if (timeRequired && !String(setup?.time_field || '').trim()) blockers.push('Time');
-  if (setup?.confirmed === false) blockers.push('Save configuration');
+  const hasTimeCandidate = Array.isArray(detail?.fields) && detail.fields.some((f: any) => f.time_candidate || f.suggested_role === 'time');
+  
+  if (timeRequired && !timeField && !hasTimeCandidate) blockers.push('Time');
+  
+  // We only block on 'Save configuration' if dims/kpis are literally empty AND discovery failed
+  if (!isConfirmed && (!dims.length || !kpis.length)) {
+      blockers.push('Save configuration');
+  }
   return blockers;
 }
 
-function ensureBaselineSetupReady(actionText: string): boolean {
+function ensureReferenceSetupReady(actionText: string): boolean {
   const endpointPath = String(state.selectedApi || '').trim();
   if (!endpointPath) return false;
   const detail = selectedApiDetail();
-  const blockers = baselineSetupBlockers(detail);
+  const blockers = referenceSetupBlockers(detail);
   if (!blockers.length) return true;
   const message = `Before ${actionText}, complete setup in Configuration: ${blockers.join(', ')}.`;
   ui.uploadFeedback.textContent = message;
@@ -2295,7 +2314,7 @@ async function previewUpload() {
     showToast('Select an API first before checking a file.', 'error');
     return;
   }
-  if (!ensureBaselineSetupReady('checking this file')) return;
+  if (!ensureReferenceSetupReady('checking this file')) return;
   if (!ui.uploadFile.files || !ui.uploadFile.files.length) {
     ui.uploadFeedback.textContent = 'Choose a CSV or XLSX file first.';
     return;
@@ -2332,17 +2351,22 @@ async function previewUpload() {
     }
     ui.uploadPreviewStep.style.display = '';
     if (!result.ok) {
+      const rawError = String(result.error || 'Unexpected error.');
+      const normalizedError = rawError.toLowerCase();
+      const displayError = normalizedError.includes("local variable 'warnings'")
+        ? 'Upload preview failed due to a server bug. Restart Jin (or upgrade to the latest build) and retry Check file.'
+        : rawError;
       ui.uploadPreviewBody.innerHTML = `
             <div class="upload-preview-error">
               <strong>Problem with your file</strong>
-              <div style="margin-top:6px;">${result.error || 'Unexpected error.'}</div>
+              <div style="margin-top:6px;">${escapeHtml(displayError)}</div>
               ${(result.warnings || []).length
           ? `<ul style="margin-top:8px;">${result.warnings.map((w: string) => `<li>${w}</li>`).join('')}</ul>`
           : ''}
             </div>
           `;
       ui.uploadConfirmToolbar.style.display = 'none';
-      ui.uploadFeedback.textContent = result.error || 'File check failed.';
+      ui.uploadFeedback.textContent = displayError || 'File check failed.';
     } else {
       const rowsInFile = Number(result.rows_in_file || result.rows_found || 0);
       const columnsInFile = Number(result.columns_in_file || 0);
@@ -2350,6 +2374,9 @@ async function previewUpload() {
       const largeUpload = Boolean(result.is_large_upload);
       let mappingConfidenceHtml = '';
       let mappingFeedbackSuffix = '';
+      let canConfirmUpload = true;
+      let confirmBlockReason = '';
+      let confirmBlockHtml = '';
       try {
         const mappingResponse = await fetch(`/jin/api/v2/config-mapping/test/${slug(state.selectedApi)}`, {
           method: 'POST',
@@ -2357,14 +2384,28 @@ async function previewUpload() {
           body: '{}',
         });
         const mappingPayload = await mappingResponse.json();
+        const detail = selectedApiDetail();
+        const setup = detail?.setup_config || detail?.config || {};
+        const timeRequired = setupRequiresTimeField(detail, setup);
         if (mappingResponse.ok && mappingPayload?.ok) {
           const sampleCount = Number(mappingPayload?.sample_count || 0);
           const successCount = Number(mappingPayload?.summary?.success_count || 0);
           const mappingSource = String(mappingPayload?.sample_source || 'none');
+          if (sampleCount === 0 && mappingSource === 'none') {
+            const apiKey = String(state.selectedApi || '');
+            if (apiKey && !state.mappingNoSamplesToastByApi?.[apiKey]) {
+              state.mappingNoSamplesToastByApi = state.mappingNoSamplesToastByApi || {};
+              state.mappingNoSamplesToastByApi[apiKey] = true;
+              showToast(
+                'Time mapping confidence is not validated yet because Jin has no runtime JSON samples for this API. Fix: hit the API once with Jin running, or paste a JSON sample payload in Configuration > Time mapping > Test.',
+                'info',
+              );
+            }
+          }
           const ratioPct = sampleCount > 0 ? Math.round((successCount / sampleCount) * 100) : 0;
           const confidenceTone = sampleCount === 0 ? 'info' : successCount === sampleCount ? 'success' : (successCount > 0 ? 'info' : 'danger');
           const confidenceLabel = sampleCount === 0
-            ? 'Not validated yet'
+            ? (Boolean(result.upload_has_time_validated) ? 'Validated (Upload)' : 'Not validated yet')
             : successCount === sampleCount
               ? `Strong (${ratioPct}%)`
               : successCount > 0
@@ -2373,11 +2414,12 @@ async function previewUpload() {
           const warningRows = Array.isArray(mappingPayload?.summary?.warnings)
             ? mappingPayload.summary.warnings
             : [];
+          const mappingSourceLabel = sampleCount === 0 && Boolean(result.upload_has_time_validated) ? 'upload content' : mappingSource;
           mappingConfidenceHtml = `
             <div class="feedback ${confidenceTone}" style="margin-top:10px;">
               <strong>Time mapping confidence: ${escapeHtml(confidenceLabel)}</strong>
               <div class="tiny" style="margin-top:6px;">
-                Parsed ${fmt(successCount)}/${fmt(sampleCount)} sample row(s) • source: ${escapeHtml(mappingSource)}.
+                Parsed ${fmt(sampleCount === 0 ? result.rows_found : successCount)}/${fmt(sampleCount || result.rows_found)} sample row(s) • source: ${escapeHtml(mappingSourceLabel)}.
               </div>
               ${warningRows.length
                 ? `<div class="tiny muted" style="margin-top:6px;">${escapeHtml(String(warningRows[0]))}</div>`
@@ -2387,9 +2429,60 @@ async function previewUpload() {
           mappingFeedbackSuffix = sampleCount > 0
             ? ` Time mapping parsed ${fmt(successCount)}/${fmt(sampleCount)} sample row(s).`
             : ' Time mapping has no runtime sample yet.';
+
+          // Enforce correctness: if time is required for this API, we only allow confirming uploads
+          // once the time mapping has been validated with real JSON samples.
+          if (timeRequired) {
+            const uploadValidated = Boolean(result.upload_has_time_validated);
+            if (sampleCount === 0 && !uploadValidated) {
+              canConfirmUpload = false;
+              confirmBlockReason = 'Time mapping is not validated yet (no runtime JSON samples).';
+            } else if (sampleCount === 0 && uploadValidated) {
+              // Allow confirmation because the upload itself provides a valid time field matching config
+              mappingFeedbackSuffix = ' Time mapping validated from your upload.';
+            } else if (successCount !== sampleCount) {
+              canConfirmUpload = false;
+              confirmBlockReason = `Time mapping needs a fix (${fmt(successCount)}/${fmt(sampleCount)} samples parsed).`;
+            }
+          }
+        } else if (timeRequired) {
+          canConfirmUpload = false;
+          confirmBlockReason = 'Could not validate time mapping for this API.';
         }
       } catch {
         // Keep upload preview resilient even if mapping confidence fetch fails.
+        const detail = selectedApiDetail();
+        const setup = detail?.setup_config || detail?.config || {};
+        const timeRequired = setupRequiresTimeField(detail, setup);
+        if (timeRequired) {
+          canConfirmUpload = false;
+          confirmBlockReason = 'Could not validate time mapping for this API (network or server error).';
+        }
+      }
+
+      const apiKey = String(state.selectedApi || '');
+      if (apiKey) {
+        state.uploadConfirmGateByApi = state.uploadConfirmGateByApi || {};
+        state.uploadConfirmGateByApi[apiKey] = {
+          ready: canConfirmUpload,
+          reason: confirmBlockReason || undefined,
+          hint: canConfirmUpload
+            ? undefined
+            : 'Fix: hit the API once with Jin running, or paste a JSON sample in Configuration > Time mapping > Test, then re-run Check file.',
+        };
+      }
+
+      if (!canConfirmUpload) {
+        const reason = confirmBlockReason || 'Upload is blocked because setup is not ready yet.';
+        confirmBlockHtml = `
+          <div class="feedback danger" style="margin-top:10px;">
+            <strong>Upload blocked</strong>
+            <div class="tiny" style="margin-top:6px;">
+              ${escapeHtml(reason)} Fix this first in <strong>Configuration</strong>, then re-run <strong>Check file</strong>.
+            </div>
+          </div>
+        `;
+        showToast(`${reason} Open Configuration to fix it.`, 'error');
       }
       const sampleHtml = (result.sample_rows || []).length
         ? `<table class="preview-table">
@@ -2419,6 +2512,7 @@ async function previewUpload() {
           ? `<div class="feedback info" style="margin-top:10px;">Large/wide upload detected. Validation may take longer, but Jin will process it safely.</div>`
           : ''}
               ${mappingConfidenceHtml}
+              ${confirmBlockHtml}
               ${(result.warnings || []).length
           ? `<div class="upload-preview-warnings"><strong>Warnings</strong><ul>${result.warnings.map((w: string) => `<li>${w}</li>`).join('')}</ul></div>`
           : ''}
@@ -2427,7 +2521,11 @@ async function previewUpload() {
             </div>
           `;
       ui.uploadConfirmToolbar.style.display = '';
-      ui.uploadFeedback.textContent = `File check passed. ${fmt(rowsInFile)} row(s) ready for upload.${mappingFeedbackSuffix}`;
+      ui.uploadButton.disabled = !canConfirmUpload;
+      ui.uploadButton.title = canConfirmUpload ? '' : (confirmBlockReason || 'Upload blocked');
+      ui.uploadFeedback.textContent = canConfirmUpload
+        ? `File check passed. ${fmt(rowsInFile)} row(s) ready for upload.${mappingFeedbackSuffix}`
+        : `Upload blocked. ${confirmBlockReason || ''}`.trim();
     }
   } catch (err) {
     ui.uploadPreviewBody.innerHTML = `<div class="upload-preview-error">${escapeHtml(errorMessage(err) || 'Could not connect to server. Please try again.')}</div>`;
@@ -2595,10 +2693,10 @@ async function renderComparisonInline(run: any) {
           status,
           message: comparison.message || (
             status === 'match'
-              ? `${comparison.kpi_field} matched the expected baseline.`
+              ? `${comparison.kpi_field} matched the expected target.`
               : status === 'missing_reference'
-                ? `${comparison.kpi_field} has no uploaded baseline for this grain.`
-                : `${comparison.kpi_field} did not match the uploaded baseline.`
+                ? `${comparison.kpi_field} has no uploaded targets for this grain.`
+                : `${comparison.kpi_field} did not match the uploaded targets.`
           ),
         };
       })
@@ -2626,8 +2724,8 @@ async function renderComparisonInline(run: any) {
             pctChange,
             status,
             message: expectedValue == null
-              ? `No uploaded baseline found for ${kpiField} on this grain.`
-              : `Compared using uploaded baseline (allowed +/-${tolerance.toFixed(1)}%).`,
+              ? `No uploaded targets found for ${kpiField} on this grain.`
+              : `Compared using uploaded targets (allowed +/-${tolerance.toFixed(1)}%).`,
           };
         });
   const normalized = normalizedRaw.filter((item: any) => item && String(item.kpi_field || '').trim().length > 0);
@@ -2732,7 +2830,7 @@ async function renderComparisonInline(run: any) {
           </div>
           <div class="next-step-card" onclick="switchApiTab('uploads')">
             <div class="step-icon">📊</div>
-            <strong>Update Baselines</strong>
+            <strong>Update Targets</strong>
             <p class="tiny muted">Upload a new reference file if targets have shifted.</p>
           </div>
         </div>
@@ -2748,7 +2846,7 @@ async function renderComparisonInline(run: any) {
 async function manualCheck(targetTab: 'summary' | 'history' = 'summary') {
   const path = state.selectedApi;
   if (!path) return;
-  const setupReady = ensureBaselineSetupReady('running a manual check');
+  const setupReady = ensureReferenceSetupReady('running a manual check');
   if (!setupReady) return;
   
   ui.checkNowButton.disabled = true;
@@ -2763,7 +2861,7 @@ async function manualCheck(targetTab: 'summary' | 'history' = 'summary') {
       <div class="row-card">
         <strong>Running check...</strong>
         <div class="tiny" style="margin-top:6px;">
-          Pulling latest API response and comparing against your configured baseline.
+          Pulling latest API response and comparing against your uploaded targets.
         </div>
       </div>
     `;
@@ -2821,8 +2919,24 @@ async function uploadReferences() {
     ui.uploadFeedback.textContent = 'Choose a CSV or XLSX file first.';
     return;
   }
-  if (!ensureBaselineSetupReady('starting baseline upload')) return;
+  if (!ensureReferenceSetupReady('starting target upload')) return;
   const endpointPath = state.selectedApi;
+  const gate = state.uploadConfirmGateByApi?.[endpointPath];
+  if (gate && gate.ready === false) {
+    const reason = gate.reason || 'Upload is blocked because setup is not ready yet.';
+    ui.uploadFeedback.textContent = `Upload blocked. ${reason}`;
+    showToast(`${reason} Fix it in Configuration, then re-run Check file.`, 'error');
+    setCoreInsight(endpointPath, {
+      title: 'Insight: fix setup before upload',
+      summary: `${reason} ${gate.hint || ''}`.trim(),
+      kind: 'error',
+      actionType: 'tab',
+      actionValue: 'configuration',
+      actionLabel: 'Open Setup',
+    });
+    switchApiTab('configuration', 'push');
+    return;
+  }
   const file = ui.uploadFile.files[0];
   const uploadLabel = ui.uploadButton.textContent || 'Confirm upload';
   clearDismissedUploadJob(endpointPath);
@@ -2833,12 +2947,12 @@ async function uploadReferences() {
   try {
     const jobId = await startUploadJob(endpointPath, file);
     rememberUploadJob(endpointPath, jobId);
-    showToast('Upload started. Please wait while Jin validates and imports your baseline.', 'success');
+    showToast('Upload started. Please wait while Jin validates and imports your targets.', 'success');
     switchApiTab('history', 'replace');
     ui.uploadFeedback.textContent = `Upload queued. Tracking progress for ${file.name}...`;
     setCoreInsight(endpointPath, {
       title: 'Insight: upload in progress',
-      summary: 'Baseline upload is running in the background. You can monitor progress in this view.',
+      summary: 'Target upload is running in the background. You can monitor progress in this view.',
       kind: 'info',
       actionType: 'tab',
       actionValue: 'history',
@@ -4152,7 +4266,7 @@ ui.poActionChecks.addEventListener('click', () => {
 ui.poActionBaseline.addEventListener('click', () => {
   void promoteSelectedProjectBaseline().catch((error) => {
     setProjectWorkflowMessage(errorMessage(error), 'error');
-    notifyAsyncError(error, 'Refreshing baseline targets failed.');
+    notifyAsyncError(error, 'Refreshing targets failed.');
   });
 });
 ui.poActionHealth.addEventListener('click', () => {
@@ -4823,14 +4937,7 @@ function blockInPoMode(message: string): boolean {
     const endpointPath = String(detail.endpoint_path || state.selectedApi || '').trim();
     if (!endpointPath) return;
     if (detail.response_model_present === false) {
-        const message = 'Define a Pydantic response model first. Jin needs the model to discover fields and time candidates before setup can be saved.';
-        setAutoSuggestSummary(endpointPath, {
-            headline: 'Pydantic response model required.',
-            details: message,
-        hasSuggestions: false,
-      });
-      showToast(message, 'error');
-      return;
+        showToast('No response_model detected. Jin will infer fields from runtime traffic and samples.', 'info');
     }
 
     const modelSuggestions = inferModelSetupSuggestions(detail);
@@ -5144,27 +5251,27 @@ function checkFingerprintMatch(oldName: string, newName: string, samples: any[])
 async function magicBaseline() {
     if (!state.selectedApi) return;
     const path = state.selectedApi;
-    showToast('Promoting recent averages...', 'success');
+    showToast('Seeding targets from recent averages...', 'success');
     try {
         const response = await fetch(`/jin/api/v2/promote-baseline/${slug(path)}`, { method: 'POST' });
         const result = await response.json();
         if (response.ok) {
-            showToast('Baseline refreshed from recent data.', 'success');
+            showToast('Targets seeded from recent data.', 'success');
             state.detailCache.delete(path);
             await openApi(path);
         } else {
             showToast(result.detail || 'Promotion failed.', 'error');
         }
     } catch (err) {
-        showToast('Network error promoting baseline.', 'error');
+        showToast('Network error seeding targets.', 'error');
     }
 }
 (window as any).magicBaseline = magicBaseline;
 
 async function quickFixBaseline(id: number) {
-    showToast(`Accepting actual value as new baseline for issue ${id}...`, 'success');
+    showToast(`Accepting actual value as new target for issue ${id}...`, 'success');
     const note = (document.getElementById('drawer-note') as HTMLTextAreaElement | null)?.value || '';
-    const resolutionReason = (document.getElementById('drawer-resolution-reason') as HTMLInputElement | null)?.value || 'Accepted as correct baseline by operator';
+    const resolutionReason = (document.getElementById('drawer-resolution-reason') as HTMLInputElement | null)?.value || 'Accepted as correct target by operator';
     
     try {
         const response = await fetch(`/jin/api/v2/anomaly/${id}/promote`, {
@@ -5177,18 +5284,18 @@ async function quickFixBaseline(id: number) {
         });
         const result = await response.json();
         if (response.ok) {
-            showToast('Baseline updated and issue resolved.', 'success');
-            setIncidentsMessage(`Issue ${id} accepted as baseline and resolved.`, 'success');
+            showToast('Target updated and issue resolved.', 'success');
+            setIncidentsMessage(`Issue ${id} accepted as target and resolved.`, 'success');
             closeIncidentDrawer();
             await refreshAll(true);
         } else {
             const message = result.message || 'Promotion failed.';
             showToast(message, 'error');
-            setIncidentsMessage(`Could not accept baseline for issue ${id}.`, 'error');
+            setIncidentsMessage(`Could not accept target for issue ${id}.`, 'error');
         }
     } catch (err) {
-        showToast('Network error promoting anomaly to baseline.', 'error');
-        setIncidentsMessage(`Network error while accepting baseline for issue ${id}.`, 'error');
+        showToast('Network error promoting issue into targets.', 'error');
+        setIncidentsMessage(`Network error while accepting target for issue ${id}.`, 'error');
     }
 }
 (window as any).quickFixBaseline = quickFixBaseline;

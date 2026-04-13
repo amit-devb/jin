@@ -70,7 +70,7 @@ function buildIncidentReport() {
       `## ${item.endpoint_path} • ${item.kpi_field}`,
       `- Status: ${item.status || 'active'}`,
       `- Severity: ${item.severity || 'low'}`,
-      `- Baseline: ${fmt(item.baseline_used)}`,
+      `- Target: ${fmt(item.baseline_used)}`,
       `- Actual: ${fmt(item.actual_value)}`,
       `- Delta: ${fmt(item.pct_change)}%`,
       `- Why flagged: ${item.why_flagged || item.ai_explanation || 'No explanation available.'}`,
@@ -94,7 +94,7 @@ function buildApiReport(detail: EndpointDetail) {
     `Reference uploads: ${uploads.length}`,
     '',
     '## KPI Snapshot',
-    ...((detail.current_kpis || []).map((item) => `- ${item.kpi_field}: actual ${fmt(item.actual_value)}, baseline ${fmt(item.expected_value)}, delta ${fmt(item.pct_change)}%`)),
+    ...((detail.current_kpis || []).map((item) => `- ${item.kpi_field}: actual ${fmt(item.actual_value)}, target ${fmt(item.expected_value)}, delta ${fmt(item.pct_change)}%`)),
     '',
     '## Trends',
     ...(trends.map((item) => `- ${item.kpi_field}: latest ${fmt(item.latest)}, min ${fmt(item.min)}, max ${fmt(item.max)}, delta ${fmt(item.delta_pct)}%`)),
@@ -133,7 +133,7 @@ function buildIncidentsHtmlReport() {
     body: [
       `Status: ${item.status || 'active'}`,
       `Severity: ${item.severity || 'low'}`,
-      `Baseline: ${fmt(item.baseline_used)}`,
+      `Target: ${fmt(item.baseline_used)}`,
       `Actual: ${fmt(item.actual_value)}`,
       `Delta: ${fmt(item.pct_change)}%`,
       `Why flagged: ${item.why_flagged || item.ai_explanation || 'No explanation available.'}`,
@@ -156,7 +156,7 @@ function buildApiHtmlReport(detail: EndpointDetail) {
     {
       title: 'KPI Snapshot',
       body: (detail.current_kpis || [])
-        .map((item) => `${item.kpi_field}: actual ${fmt(item.actual_value)}, baseline ${fmt(item.expected_value)}, delta ${fmt(item.pct_change)}%`)
+        .map((item) => `${item.kpi_field}: actual ${fmt(item.actual_value)}, target ${fmt(item.expected_value)}, delta ${fmt(item.pct_change)}%`)
         .join('\\n') || 'No KPI snapshot available.',
     },
     {

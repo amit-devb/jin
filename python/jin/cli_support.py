@@ -5,10 +5,14 @@ import csv
 import importlib
 import inspect
 import json
+import shutil
 import shlex
 import os
 import re
 import subprocess
+import sys
+import tempfile
+import time
 import webbrowser
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -45,6 +49,31 @@ try:
         verify_core as native_verify_core,
     )
 except ImportError:  # pragma: no cover
+    native_auth_status = None
+    native_config_show = None
+    native_doctor_core = None
+    native_endpoints_list = None
+    native_env_check = None
+    native_get_endpoint_detail = None
+    native_init_db = None
+    native_import_reference_rows = None
+    native_issues_list = None
+    native_issues_update = None
+    native_local_urls = None
+    native_project_status = None
+    native_references_export = None
+    native_report_summary = None
+    native_save_endpoint_config = None
+    native_sync_registry = None
+    native_template_spec = None
+    native_validate_reference_rows = None
+    native_verify_core = None
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+if _env_truthy("JIN_DISABLE_NATIVE"):
     native_auth_status = None
     native_config_show = None
     native_doctor_core = None
@@ -427,7 +456,8 @@ def route_records(app: FastAPI) -> list[dict[str, Any]]:
             continue
         if route.path.startswith("/jin"):
             continue
-        fields, dims, kpis, array_field_path = classify_model(route.response_model)
+        response_model = JinMiddleware._resolve_response_model(route)
+        fields, dims, kpis, array_field_path = classify_model(response_model)
         methods = sorted(route.methods or {"GET"})
         method = methods[0] if methods else "GET"
         records.append(
@@ -610,7 +640,159 @@ def print_serve_check(app_path: str) -> None:
     print("  - Then restart the app and open /jin.")
 
 
+def _infer_app_import_for_check(explicit_app_path: str | None) -> tuple[str | None, str | None]:
+    if explicit_app_path:
+        return explicit_app_path, None
+    try:
+        module_path = discover_module_path()
+        file_path = resolve_module_file(module_path)
+        _, import_attr = detect_fastapi_entrypoint_in_source(file_path.read_text(), None)
+        return f"{module_path}:{import_attr}", None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def command_init_check(args: argparse.Namespace) -> int:
+    project_name = env_project_name(getattr(args, "project_name", None))
+    db_path = env_db_path(getattr(args, "db_path", None))
+    env_file = getattr(args, "env_file", ".env")
+    env_data = env_check_data(env_file, db_path, project_name)
+    auth = auth_status_data()
+
+    app_import, app_detection_error = _infer_app_import_for_check(getattr(args, "app", None))
+    app_load_error: str | None = None
+    has_jin_middleware = False
+    has_jin_routes = False
+    discovery_summary: dict[str, int] = {
+        "total": 0,
+        "ready": 0,
+        "partial": 0,
+        "runtime_infer": 0,
+    }
+    discovery_examples: list[tuple[str, str, list[str]]] = []
+
+    if app_import:
+        try:
+            app = load_app(app_import)
+            has_jin_middleware = any(
+                getattr(middleware, "cls", None) is JinMiddleware for middleware in app.user_middleware
+            )
+            has_jin_routes = any(
+                isinstance(route, APIRoute) and str(getattr(route, "path", "")).startswith("/jin")
+                for route in app.routes
+            )
+            for route in app.routes:
+                if not isinstance(route, APIRoute):
+                    continue
+                if str(route.path).startswith("/jin"):
+                    continue
+                response_model = JinMiddleware._resolve_response_model(route)
+                fields, dims, kpis, _array = classify_model(response_model)
+                status, reasons = JinMiddleware._discovery_profile(
+                    response_model=response_model,
+                    fields=fields,
+                    dimension_fields=dims,
+                    kpi_fields=kpis,
+                )
+                discovery_summary["total"] += 1
+                discovery_summary[status] = int(discovery_summary.get(status, 0)) + 1
+                if status != "ready" and len(discovery_examples) < 5:
+                    discovery_examples.append((route.path, status, reasons))
+        except Exception as exc:
+            app_load_error = str(exc)
+
+    mounted = has_jin_middleware or has_jin_routes
+    guidance: list[str] = []
+    if app_import:
+        guidance.append(f"App target: {app_import}")
+    else:
+        guidance.append("App target: not detected")
+    if app_detection_error:
+        guidance.append(
+            "Could not auto-detect a FastAPI app in this folder. "
+            "Run: jin init --check --app package.module:app"
+        )
+    if app_load_error:
+        guidance.append(
+            "The app import path could not be loaded. "
+            f"Details: {app_load_error}"
+        )
+    if app_import and not app_load_error and not mounted:
+        module_path = app_import.split(":", 1)[0]
+        guidance.append(
+            "Jin is not mounted yet. "
+            f"Run: jin patch fastapi --app-file {module_path}"
+        )
+    if discovery_summary["total"] == 0:
+        guidance.append(
+            "No non-/jin API routes were discovered. "
+            "Add at least one FastAPI route with a structured response model."
+        )
+    if discovery_summary["runtime_infer"] > 0:
+        guidance.append(
+            "Some routes will be inferred from runtime traffic. "
+            "Adding FastAPI `response_model=...` improves discovery, but you can also configure mappings from samples."
+        )
+    if discovery_summary["partial"] > 0:
+        guidance.append(
+            "Some routes are partially inferred. "
+            "Confirm dimensions/KPIs in the Jin UI or via `jin config set`."
+        )
+    if not bool(env_data.get("env_exists")):
+        guidance.append(
+            f"Create project env defaults with: jin init --write --env-file {env_file}"
+        )
+    if not bool(env_data.get("db_exists")):
+        guidance.append(
+            f"Initialize local DB schema with: jin doctor --fix --db-path {db_path}"
+        )
+    if auth.get("warnings"):
+        guidance.append(
+            "Auth settings are incomplete or unsafe. "
+            "Run: jin auth rotate --write-env"
+        )
+    guidance.append(
+        f"Re-check readiness with: jin doctor --deep --app {app_import or 'package.module:app'} --db-path {db_path}"
+    )
+
+    summary_rows = [
+        ["check", "status"],
+        ["project", project_name],
+        ["env_file", "yes" if bool(env_data.get("env_exists")) else "no"],
+        ["db_file", "yes" if bool(env_data.get("db_exists")) else "no"],
+        ["auth_ready", "yes" if not auth.get("warnings") else "needs attention"],
+        ["app_detected", "yes" if app_import else "no"],
+        ["app_loadable", "yes" if app_import and not app_load_error else "no"],
+        ["jin_mounted", "yes" if mounted else "no"],
+        ["apis_total", str(discovery_summary["total"])],
+        ["apis_ready", str(discovery_summary["ready"])],
+        ["apis_partial", str(discovery_summary["partial"])],
+        ["apis_runtime_infer", str(discovery_summary["runtime_infer"])],
+    ]
+    print("Jin init check")
+    print("--------------")
+    if app_import and not getattr(args, "app", None):
+        print(f"Auto-detected FastAPI app: {app_import}")
+    print(render_text_table(summary_rows))
+
+    if discovery_examples:
+        detail_rows = [["endpoint", "status", "reasons"]]
+        for endpoint_path, status, reasons in discovery_examples:
+            detail_rows.append([endpoint_path, status, ",".join(reasons) if reasons else "-"])
+        print("")
+        print("Discovery samples:")
+        print(render_text_table(detail_rows))
+
+    print("")
+    print("Guidance:")
+    for item in guidance:
+        print(f"- {item}")
+    return 0
+
+
 def command_init(args: argparse.Namespace) -> int:
+    if bool(getattr(args, "check", False)):
+        return command_init_check(args)
     interactive = bool(getattr(args, "interactive", False))
     project_name = env_project_name(args.project_name)
     db_path = env_db_path(args.db_path)
@@ -1013,6 +1195,7 @@ def command_completion(args: argparse.Namespace) -> int:
         "issues",
         "watches",
         "serve",
+        "benchmark",
     ]
     subcommands = {
         "env": "check",
@@ -1024,18 +1207,20 @@ def command_completion(args: argparse.Namespace) -> int:
         "references": "import validate export",
         "issues": "list update",
         "watches": "list run",
+        "benchmark": "install",
     }
     option_map = {
-        "init": "--project-name --db-path --app --serve-check --env-file --write --force --auth --no-auth --interactive --open",
+        "init": "--project-name --db-path --app --serve-check --env-file --write --force --check --auth --no-auth --interactive --open",
         "quickstart": "--project-name --db-path --app --env-file --write --force --auth --no-auth --interactive --open",
         "setup": "--app-var --project-name --db-path --env-file --global-threshold --no-auth --no-open",
         "open": "--host --port --scheme --path --format --launch",
         "patch": "",
         "status": "--db-path --env-file --project-name --app --format",
         "urls": "--host --port --scheme --format --launch",
-        "doctor": "--db-path --env-file --project-name --app --format --strict --fix",
+        "doctor": "--db-path --env-file --project-name --app --format --strict --fix --deep",
         "verify": "--db-path --env-file --project-name --app --format --strict",
         "serve": "--app --host --port --reload",
+        "benchmark": "",
     }
     subcommand_options = {
         "env check": "--env-file --db-path --project-name --format",
@@ -1054,6 +1239,7 @@ def command_completion(args: argparse.Namespace) -> int:
         "issues update": "--id --action --note --owner --resolution-reason --db-path --format",
         "watches list": "--app --db-path --format",
         "watches run": "--app --endpoint --db-path",
+        "benchmark install": "--python --runs --tool --with-deps --native-baseline --no-native-baseline --format --keep-temp",
     }
     joined = " ".join(commands)
     if args.shell == "bash":
@@ -1077,7 +1263,7 @@ def command_completion(args: argparse.Namespace) -> int:
   if [[ "$cur" == -* ]]; then
     case "$prev" in
 {option_cases}
-      env|auth|endpoints|config|templates|references|issues|watches)
+      env|auth|endpoints|config|templates|references|issues|watches|benchmark)
         case "$sub" in
 {nested_cases}
         esac
@@ -1191,6 +1377,277 @@ def upsert_env_values(
 
     env_path.write_text("\n".join(updated_lines).rstrip() + "\n")
     return changed_keys
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _resolve_bin(name: str) -> str | None:
+    return shutil.which(name)
+
+
+def _resolve_python_bin(candidate: str) -> str:
+    if Path(candidate).exists():
+        return str(Path(candidate))
+    located = shutil.which(candidate)
+    if located:
+        return located
+    return sys.executable
+
+
+def _venv_python_path(venv_dir: Path) -> Path:
+    scripts_dir = venv_dir / "Scripts"
+    if scripts_dir.exists():
+        return scripts_dir / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _timed_run(command: list[str], *, env: dict[str, str] | None = None, cwd: Path | None = None) -> float:
+    started = time.perf_counter()
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=cwd,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        if stderr:
+            stderr = stderr.splitlines()[-1]
+        raise RuntimeError(
+            f"Command failed: {' '.join(command)}"
+            + (f" | {stderr}" if stderr else "")
+        ) from exc
+    return max(time.perf_counter() - started, 0.0)
+
+
+def _benchmark_fast_install_once(
+    *,
+    temp_root: Path,
+    python_bin: str,
+    install_tool: str,
+    package_root: Path,
+    include_deps: bool,
+) -> dict[str, Any]:
+    venv_dir = temp_root / "fast-venv"
+    if install_tool == "uv":
+        uv_bin = _resolve_bin("uv")
+        if uv_bin is None:
+            raise RuntimeError("uv is not installed. Install uv or use --tool pip.")
+        uv_env = dict(os.environ)
+        uv_env.setdefault("UV_CACHE_DIR", str(temp_root / "uv-cache"))
+        _timed_run([uv_bin, "venv", str(venv_dir), "--python", python_bin], env=uv_env)
+        venv_python = str(_venv_python_path(venv_dir))
+        _timed_run([venv_python, "-m", "ensurepip", "--upgrade"], env=uv_env)
+        command = [venv_python, "-m", "pip", "install"]
+        if not include_deps:
+            command.append("--no-deps")
+        command.append(str(package_root))
+        install_seconds = _timed_run(command, env=uv_env)
+    else:
+        _timed_run([python_bin, "-m", "venv", "--system-site-packages", str(venv_dir)])
+        venv_python = str(_venv_python_path(venv_dir))
+        command = [venv_python, "-m", "pip", "install"]
+        if not include_deps:
+            command.append("--no-deps")
+        command.append(str(package_root))
+        install_seconds = _timed_run(command)
+
+    return {
+        "tool": install_tool,
+        "install_seconds": round(install_seconds, 3),
+    }
+
+
+def _benchmark_native_baseline_once(*, temp_root: Path, package_root: Path) -> dict[str, Any]:
+    cargo_bin = _resolve_bin("cargo")
+    if cargo_bin is None:
+        return {
+            "available": False,
+            "reason": "cargo is not installed; skipped native baseline.",
+            "native_compile_seconds": None,
+        }
+    baseline_env = dict(os.environ)
+    baseline_env.setdefault("PYO3_USE_ABI3_FORWARD_COMPATIBILITY", "1")
+    baseline_env["CARGO_TARGET_DIR"] = str(temp_root / "cargo-target")
+    compile_seconds = _timed_run(
+        [
+            cargo_bin,
+            "build",
+            "--release",
+            "--features",
+            "extension-module",
+            "--manifest-path",
+            str(package_root / "Cargo.toml"),
+        ],
+        env=baseline_env,
+        cwd=package_root,
+    )
+    return {
+        "available": True,
+        "reason": None,
+        "native_compile_seconds": round(compile_seconds, 3),
+    }
+
+
+def _select_install_tool(requested_tool: str) -> str:
+    if requested_tool in {"uv", "pip"}:
+        return requested_tool
+    return "uv" if _resolve_bin("uv") else "pip"
+
+
+def command_benchmark_install(args: argparse.Namespace) -> int:
+    runs = int(getattr(args, "runs", 1))
+    if runs < 1:
+        raise RuntimeError("--runs must be >= 1")
+
+    python_bin = _resolve_python_bin(str(getattr(args, "python", "python3")))
+    requested_tool = str(getattr(args, "tool", "auto"))
+    selected_tool = _select_install_tool(str(getattr(args, "tool", "auto")))
+    include_native_baseline = bool(getattr(args, "native_baseline", True))
+    include_deps = bool(getattr(args, "with_deps", False))
+    package_root = _repo_root()
+    keep_temp = bool(getattr(args, "keep_temp", False))
+
+    run_rows: list[dict[str, Any]] = []
+    native_rows: list[dict[str, Any]] = []
+    temp_roots: list[str] = []
+
+    for run_index in range(1, runs + 1):
+        temp_root = Path(tempfile.mkdtemp(prefix=f"jin-install-benchmark-{run_index}-"))
+        temp_roots.append(str(temp_root))
+        try:
+            fast_row = _benchmark_fast_install_once(
+                temp_root=temp_root,
+                python_bin=python_bin,
+                install_tool=selected_tool,
+                package_root=package_root,
+                include_deps=include_deps,
+            )
+        except Exception as exc:
+            if requested_tool == "auto" and selected_tool == "uv":
+                selected_tool = "pip"
+                try:
+                    fast_row = _benchmark_fast_install_once(
+                        temp_root=temp_root,
+                        python_bin=python_bin,
+                        install_tool=selected_tool,
+                        package_root=package_root,
+                        include_deps=include_deps,
+                    )
+                    fast_row["fallback_reason"] = str(exc)
+                except Exception as pip_exc:
+                    raise RuntimeError(
+                        "Install benchmark failed for both uv and pip modes. "
+                        "Check network access and Python build tooling, or rerun with "
+                        "`--tool pip --with-deps`."
+                    ) from pip_exc
+            else:
+                raise RuntimeError(
+                    "Install benchmark failed. "
+                    "Check network access and Python build tooling, or rerun with "
+                    "`--with-deps`."
+                ) from exc
+        run_rows.append({"run": run_index, **fast_row})
+        if include_native_baseline:
+            native_row = _benchmark_native_baseline_once(temp_root=temp_root, package_root=package_root)
+            native_rows.append({"run": run_index, **native_row})
+        if not keep_temp:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    fast_values = [float(item["install_seconds"]) for item in run_rows]
+    fast_avg = round(sum(fast_values) / len(fast_values), 3) if fast_values else None
+
+    native_values = [
+        float(item["native_compile_seconds"])
+        for item in native_rows
+        if item.get("available") and item.get("native_compile_seconds") is not None
+    ]
+    native_avg = round(sum(native_values) / len(native_values), 3) if native_values else None
+    speedup_pct = None
+    speedup_x = None
+    if native_avg is not None and fast_avg is not None and native_avg > 0:
+        speedup_pct = round(((native_avg - fast_avg) / native_avg) * 100.0, 2)
+        speedup_x = round(native_avg / max(fast_avg, 0.001), 2)
+
+    payload = {
+        "tool": selected_tool,
+        "runs": runs,
+        "with_deps": include_deps,
+        "fast_path": {
+            "runs": run_rows,
+            "avg_install_seconds": fast_avg,
+        },
+        "legacy_native_baseline": {
+            "enabled": include_native_baseline,
+            "runs": native_rows,
+            "avg_native_compile_seconds": native_avg,
+            "note": "Native baseline approximates legacy Rust-compile install overhead.",
+        },
+        "estimated_reduction_pct_vs_native": speedup_pct,
+        "estimated_speedup_x_vs_native": speedup_x,
+        "temp_dirs": temp_roots if keep_temp else [],
+    }
+
+    if getattr(args, "format", "table") == "json":
+        return print_json(payload)
+
+    print("Install benchmark")
+    print("-----------------")
+    print(
+        render_text_table(
+            [
+                ["metric", "value"],
+                ["tool", selected_tool],
+                ["runs", str(runs)],
+                ["with_deps", "yes" if include_deps else "no"],
+                ["avg_fast_install_seconds", str(fast_avg)],
+            ]
+        )
+    )
+
+    fast_table = [["run", "tool", "fast_install_seconds"]]
+    for item in run_rows:
+        fast_table.append([str(item["run"]), str(item["tool"]), str(item["install_seconds"])])
+    print("")
+    print("Fast path runs:")
+    print(render_text_table(fast_table))
+
+    if include_native_baseline:
+        native_table = [["run", "available", "native_compile_seconds", "reason"]]
+        for item in native_rows:
+            native_table.append(
+                [
+                    str(item["run"]),
+                    "yes" if bool(item.get("available")) else "no",
+                    str(item.get("native_compile_seconds") or "-"),
+                    str(item.get("reason") or "-"),
+                ]
+            )
+        print("")
+        print("Native baseline runs:")
+        print(render_text_table(native_table))
+
+        if speedup_pct is not None and speedup_x is not None:
+            print("")
+            print(
+                f"Estimated install-time reduction vs native baseline: {speedup_pct}% ({speedup_x}x faster)"
+            )
+        else:
+            print("")
+            print("Estimated install-time reduction is unavailable because native baseline could not run.")
+
+    if keep_temp and temp_roots:
+        print("")
+        print("Kept temp benchmark dirs:")
+        for path in temp_roots:
+            print(f"- {path}")
+    return 0
 
 
 def auth_status_data() -> dict[str, Any]:
@@ -1371,6 +1828,71 @@ def command_doctor(args: argparse.Namespace) -> int:
         "checks": {name: status for name, status in checks},
         "strict_failures": strict_failures,
     }
+    if bool(getattr(args, "deep", False)):
+        deep_payload: dict[str, Any] = {
+            "install": {
+                "distribution": "jin-monitor",
+                "native_runtime_expected": native_doctor_core is not None,
+                "native_support_available": {
+                    "doctor_core": native_doctor_core is not None,
+                    "project_status": native_project_status is not None,
+                    "verify_core": native_verify_core is not None,
+                },
+            },
+            "runtime": {
+                "env_file": str(env_path),
+                "env_exists": env_path.exists(),
+                "db_exists": Path(db_path).exists(),
+                "db_size_bytes": Path(db_path).stat().st_size if Path(db_path).exists() else 0,
+            },
+            "slo_targets": {
+                "install_seconds": float(os.getenv("JIN_INSTALL_SLO_SECONDS", "30")),
+                "startup_seconds": float(os.getenv("JIN_STARTUP_SLO_SECONDS", "5")),
+            },
+        }
+        if args.app:
+            try:
+                app = load_app(args.app)
+                route_rows: list[dict[str, Any]] = []
+                reason_counts: dict[str, int] = {}
+                summary = {"ready": 0, "partial": 0, "runtime_infer": 0, "total": 0}
+                for route in app.routes:
+                    if not isinstance(route, APIRoute):
+                        continue
+                    if str(route.path).startswith("/jin"):
+                        continue
+                    response_model = JinMiddleware._resolve_response_model(route)
+                    fields, dims, kpis, _array = classify_model(response_model)
+                    status, reasons = JinMiddleware._discovery_profile(
+                        response_model=response_model,
+                        fields=fields,
+                        dimension_fields=dims,
+                        kpi_fields=kpis,
+                    )
+                    summary["total"] += 1
+                    summary[status] = int(summary.get(status, 0)) + 1
+                    for code in reasons:
+                        reason_counts[code] = int(reason_counts.get(code, 0)) + 1
+                    route_rows.append(
+                        {
+                            "endpoint_path": route.path,
+                            "http_method": sorted(route.methods or {"GET"})[0],
+                            "discovery_status": status,
+                            "discovery_reason_codes": reasons,
+                            "dimensions": dims,
+                            "kpis": kpis,
+                        }
+                    )
+                deep_payload["discovery"] = {
+                    "summary": summary,
+                    "reason_counts": reason_counts,
+                    "problem_endpoints": [
+                        row for row in route_rows if row.get("discovery_status") != "ready"
+                    ][:12],
+                }
+            except Exception as exc:
+                deep_payload["discovery"] = {"error": str(exc)}
+        data["deep"] = deep_payload
     if getattr(args, "format", "table") == "json":
         if not silent:
             print_json(data)
@@ -1378,6 +1900,20 @@ def command_doctor(args: argparse.Namespace) -> int:
     if not silent:
         formatted_checks = [[str(k), str(v)] for k, v in checks]
         print(render_text_table([["check", "status"]] + formatted_checks))
+        if bool(getattr(args, "deep", False)):
+            deep = data.get("deep", {})
+            print("")
+            print("Deep diagnostics:")
+            print(render_text_table([["section", "status"], ["install", "ok"], ["runtime", "ok"], ["discovery", "ok" if isinstance(deep.get("discovery"), dict) and not deep["discovery"].get("error") else "warning"]]))
+            discovery = deep.get("discovery", {})
+            if isinstance(discovery, dict) and isinstance(discovery.get("summary"), dict):
+                summary = discovery["summary"]
+                print(
+                    f"Discovery summary: total={summary.get('total', 0)} "
+                    f"ready={summary.get('ready', 0)} "
+                    f"partial={summary.get('partial', 0)} "
+                    f"runtime_infer={summary.get('runtime_infer', 0)}"
+                )
     if getattr(args, "strict", False) and strict_failures:
         if not silent:
             print("")

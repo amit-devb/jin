@@ -150,7 +150,7 @@ function renderPlainLanguageInsight(): string {
     return `
       <div class="row-card">
         <strong>Needs attention</strong>
-        <div class="muted" style="margin-top:6px;">Some APIs still need setup or baseline review. Finish setup first, then use Issues and Reports to track business impact.</div>
+        <div class="muted" style="margin-top:6px;">Some APIs still need setup or target review. Finish setup first, then use Issues and Reports to track business impact.</div>
         <div class="tiny muted" style="margin-top:8px;">Healthy: ${fmt(summary.healthy || 0)} • Needs setup: ${fmt(needsSetup)} • Needs care: ${fmt(needsAttention)} • Recent errors: ${fmt(recentErrors.length)}</div>
       </div>
     `;
@@ -215,7 +215,7 @@ function setupHealthMeta(endpoint: EndpointStatus): { label: string; tone: strin
   const hasTimeField = Boolean(String(endpoint.time_field || '').trim());
   const timeRequired = endpoint.time_required !== false;
   const confirmed = Boolean(endpoint.confirmed);
-  const hasBaseline = Boolean(endpoint.last_upload_at);
+  const hasTargets = Boolean(endpoint.last_upload_at);
 
   if (!dimensionCount || !kpiCount || (timeRequired && !hasTimeField)) {
     return {
@@ -233,17 +233,17 @@ function setupHealthMeta(endpoint: EndpointStatus): { label: string; tone: strin
       hint: 'Save configuration before checks/uploads.',
     };
   }
-  if (!hasBaseline) {
+  if (!hasTargets) {
     return {
-      label: 'Needs baseline',
+      label: 'Needs targets',
       tone: 'info',
-      hint: 'Upload a baseline file to start pass/fail checks.',
+      hint: 'Upload a target file to start pass/fail checks.',
     };
   }
   return {
     label: 'Ready',
     tone: 'success',
-    hint: 'Setup and baseline are in place.',
+    hint: 'Setup and targets are in place.',
   };
 }
 
@@ -306,7 +306,7 @@ function apiBrowserSortValue(item: EndpointStatus, key: string): string | number
   const setupMeta = setupHealthMeta(item);
   const setupScore = setupMeta.label === 'Ready'
     ? 3
-    : setupMeta.label === 'Needs baseline'
+    : setupMeta.label === 'Needs targets'
       ? 2
       : setupMeta.label === 'Save setup'
         ? 1
@@ -695,7 +695,7 @@ function analysisStatusPill(status: string): string {
 function analysisStatusLabel(status: string): string {
   if (status === 'match') return 'Matched';
   if (status === 'mismatch') return 'Mismatch';
-  if (status === 'missing_reference') return 'No Baseline';
+  if (status === 'missing_reference') return 'No Targets';
   if (status === 'missing_kpi') return 'Missing KPI';
   if (status === 'error') return 'Error';
   return status;
@@ -881,7 +881,7 @@ function plainComparisonReason(comparison: UploadAnalysisComparison): string {
     return `${label} is within the allowed range (${Math.abs(pct).toFixed(1)}% change).`;
   }
   if (comparison.status === 'missing_reference') {
-    return `No baseline is uploaded for ${label}.`;
+    return `No targets are uploaded for ${label}.`;
   }
   if (comparison.status === 'missing_kpi') {
     return `${label} was not returned by the API for this grain.`;
@@ -891,7 +891,7 @@ function plainComparisonReason(comparison: UploadAnalysisComparison): string {
   }
   if (pct == null) return `${label} is outside the allowed range.`;
   const direction = pct > 0 ? 'higher' : 'lower';
-  return `${label} is ${Math.abs(pct).toFixed(1)}% ${direction} than baseline (outside tolerance).`;
+  return `${label} is ${Math.abs(pct).toFixed(1)}% ${direction} than target (outside tolerance).`;
 }
 
 function formatPercentDelta(value: unknown): string {
@@ -999,7 +999,7 @@ function renderUploadAnalysis(analysis: UploadAnalysisSummary, detail: EndpointD
                     <thead>
                       <tr>
                         <th>KPI</th>
-                        <th>Baseline</th>
+                        <th>Target</th>
                         <th>API value</th>
                         <th>Delta</th>
                         <th>Outcome</th>
@@ -1018,7 +1018,7 @@ function renderUploadAnalysis(analysis: UploadAnalysisSummary, detail: EndpointD
                         <thead>
                           <tr>
                             <th>KPI</th>
-                            <th>Baseline</th>
+                            <th>Target</th>
                             <th>API value</th>
                             <th>Delta</th>
                             <th>Outcome</th>
@@ -1110,14 +1110,14 @@ function renderUploadAnalysis(analysis: UploadAnalysisSummary, detail: EndpointD
   const recommendation = (() => {
     if (analysis.verdict === 'mismatch') {
       if (riskScore === 'High') {
-        return 'Block release: review Issues now and review high-priority mismatches before accepting this baseline.';
+        return 'Block release: review Issues now and review high-priority mismatches before accepting these targets as correct.';
       }
       return 'Needs attention: review mismatch rows and mark expected changes in review, then resolve the rest.';
     }
     if (analysis.verdict === 'error') {
       return 'Block release: fix run errors first, then re-run upload analysis.';
     }
-    return 'Safe for now: baseline looks healthy. Continue with scheduled monitoring checks.';
+    return 'Safe for now: targets look healthy. Continue with scheduled monitoring checks.';
   })();
   const impactSummary = topImpactList.length
     ? topImpactList.join(' • ')
@@ -1218,7 +1218,7 @@ function renderUploadAnalysis(analysis: UploadAnalysisSummary, detail: EndpointD
       <div class="upload-analysis-explainer">
         <strong>${uploadDecisionLabel(analysis)}</strong>
         <p>
-          A mismatch means the API returned a value outside the allowed tolerance from your uploaded CSV baseline.
+          A mismatch means the API returned a value outside the allowed tolerance from your uploaded CSV targets.
           A match means the value stayed within that allowed range.
         </p>
         <p>
@@ -1579,8 +1579,8 @@ function renderSidebar() {
           ? 'missing_reference'
           : (pctChange != null && Math.abs(pctChange) > tolerance ? 'mismatch' : 'match');
         const message = expected == null
-          ? 'No uploaded baseline was found for this metric on this grain.'
-          : `Derived from run observation and uploaded baseline (tolerance +/-${tolerance.toFixed(1)}%).`;
+          ? 'No uploaded targets were found for this metric on this grain.'
+          : `Derived from run observation and uploaded targets (tolerance +/-${tolerance.toFixed(1)}%).`;
         return {
           grainKey,
           kpiField,
@@ -1668,7 +1668,7 @@ function renderSidebar() {
     const matched = group.rows.filter((row: any) => row.status === 'match').length;
     const bits = [`${fmt(group.rows.length)} metric(s)`];
     if (mismatches) bits.push(`${fmt(mismatches)} need attention`);
-    if (missingBaseline) bits.push(`${fmt(missingBaseline)} without baseline`);
+    if (missingBaseline) bits.push(`${fmt(missingBaseline)} without targets`);
     if (matched) bits.push(`${fmt(matched)} matched`);
     return bits.join(' • ');
   };
@@ -1680,7 +1680,7 @@ function renderSidebar() {
       return `${label} is within the allowed range (${Math.abs(pct).toFixed(1)}% change).`;
     }
     if (row.status === 'missing_reference') {
-      return `No baseline is uploaded for ${label}.`;
+      return `No targets are uploaded for ${label}.`;
     }
     if (row.status === 'missing_kpi') {
       return `${label} was not returned by the API for this grain.`;
@@ -1690,7 +1690,7 @@ function renderSidebar() {
     }
     if (pct == null) return `${label} is outside the allowed range.`;
     const direction = pct > 0 ? 'higher' : 'lower';
-    return `${label} is ${Math.abs(pct).toFixed(1)}% ${direction} than baseline (outside tolerance).`;
+    return `${label} is ${Math.abs(pct).toFixed(1)}% ${direction} than target (outside tolerance).`;
   };
   const renderGroupCard = (group: any): string => {
     const flaggedRows = group.rows.filter((row: any) => row.status !== 'match');
@@ -1720,19 +1720,19 @@ function renderSidebar() {
 
       ${group.missingBaseline ? `
         <div class="run-detail-inline-help">
-          No baseline is linked to this grain yet.
-          <button class="action secondary tiny" type="button" onclick="openUploadsTab()">Set baseline</button>
+          No targets are linked to this grain yet.
+          <button class="action secondary tiny" type="button" onclick="openUploadsTab()">Upload targets</button>
         </div>
       ` : ''}
 
       <details class="run-detail-kpi-breakdown">
-        <summary>${flaggedRows.length ? `${fmt(flaggedRows.length)} KPI(s) need attention` : `${fmt(group.rows.length)} KPI(s) within baseline`}</summary>
+        <summary>${flaggedRows.length ? `${fmt(flaggedRows.length)} KPI(s) need attention` : `${fmt(group.rows.length)} KPI(s) within targets`}</summary>
         <div class="table-wrap" style="margin-top:10px;">
           <table class="row-table run-detail-kpi-table">
             <thead>
               <tr>
                 <th>Metric</th>
-                <th>Baseline</th>
+                <th>Target</th>
                 <th>API value</th>
                 <th>Delta</th>
                 <th>Outcome</th>
@@ -1764,7 +1764,7 @@ function renderSidebar() {
                 <thead>
                   <tr>
                     <th>Metric</th>
-                    <th>Baseline</th>
+                    <th>Target</th>
                     <th>API value</th>
                     <th>Delta</th>
                     <th>Outcome</th>
@@ -1806,8 +1806,8 @@ function renderSidebar() {
   ui.runDetailContent.innerHTML = `
     <div class="run-detail-guide">
       <strong>What this run means</strong>
-      <p>This view compares API values against uploaded baselines for each grain.</p>
-      ${missingBaselineGrains ? '<p class="tiny" style="margin-top:8px;">Some grains have no baseline yet. You can view raw API values, then upload a baseline to enable pass/fail checks.</p>' : ''}
+      <p>This view compares API values against uploaded targets for each grain.</p>
+      ${missingBaselineGrains ? '<p class="tiny" style="margin-top:8px;">Some grains have no targets yet. You can view raw API values, then upload targets to enable pass/fail checks.</p>' : ''}
     </div>
       <div class="upload-analysis-summary-grid" style="margin-top:12px;">
         <div class="meta-card meta-card-compact">
@@ -1819,7 +1819,7 @@ function renderSidebar() {
           <span>${fmt(mismatchGrains)}</span>
         </div>
       <div class="meta-card meta-card-compact">
-        <strong>No baseline</strong>
+        <strong>No targets</strong>
         <span>${fmt(missingBaselineGrains)}</span>
       </div>
     </div>
@@ -1835,11 +1835,11 @@ function renderSidebar() {
           </div>
         </details>
       ` : ''}
-      ${needsBaselineGroups.length ? `<div class="upload-analysis-section-title">Needs baseline setup (${fmt(needsBaselineGroups.length)})</div>` : ''}
+      ${needsBaselineGroups.length ? `<div class="upload-analysis-section-title">Needs target setup (${fmt(needsBaselineGroups.length)})</div>` : ''}
       ${visibleNeedsBaselineGroups.map((group) => renderGroupCard(group)).join('')}
       ${hiddenNeedsBaselineGroups.length ? `
         <details class="upload-analysis-more-runs">
-          <summary>Show ${fmt(hiddenNeedsBaselineGroups.length)} more grain(s) needing baseline setup</summary>
+          <summary>Show ${fmt(hiddenNeedsBaselineGroups.length)} more grain(s) needing target setup</summary>
           <div class="history-list" style="margin-top:12px;">
             ${hiddenNeedsBaselineGroups.map((group) => renderGroupCard(group)).join('')}
           </div>
@@ -1899,7 +1899,7 @@ function renderOverview() {
         primaryView: 'api',
         secondaryLabel: 'Open Getting Started',
         secondaryHref: 'https://amit-devb.github.io/jin/',
-        footer: 'After the first request, come back here to finish dimensions, KPIs, and baselines.',
+        footer: 'After the first request, come back here to finish dimensions, KPIs, and targets.',
       })
     : '';
   ui.overviewAttention.innerHTML = endpoints.length === 0
@@ -1972,7 +1972,7 @@ function renderPlaybook() {
   const nextStepCopy = anomaliesCount > 0
     ? `${anomaliesCount} issue${anomaliesCount === 1 ? '' : 's'} need attention. Review Issues and focus on high-impact rows first.`
     : setupPending > 0
-      ? `${setupPending} API${setupPending === 1 ? '' : 's'} still need setup. Set Up APIs and complete baseline setup.`
+      ? `${setupPending} API${setupPending === 1 ? '' : 's'} still need setup. Set Up APIs and complete target setup.`
       : 'No active blockers. Run checks now and generate this week\'s report pack.';
   ui.poPlaybookContent.innerHTML = `
     <div class="playbook-snapshot-grid">
@@ -2081,7 +2081,7 @@ function renderProjectWorkflowPanel() {
   const selectedIsArchived = Boolean(selectedProject?.is_archived);
   const endpoints = Array.isArray(state.status?.endpoints) ? state.status.endpoints : [];
   const trackedEndpoints = endpoints.length;
-  const endpointsWithBaseline = endpoints.filter((item) => Boolean(item?.last_upload_at)).length;
+  const endpointsWithTargets = endpoints.filter((item) => Boolean(item?.last_upload_at)).length;
   const schedulerJobs = Array.isArray(state.scheduler?.jobs) ? state.scheduler.jobs : [];
   const runnableWatchJobs = schedulerJobs.filter((job: any) => {
     const jobId = String(job?.job_id || '');
@@ -2147,13 +2147,13 @@ function renderProjectWorkflowPanel() {
       : 'Create or select a project to begin.')
     : noTrackedEndpoints
       ? 'No APIs are tracked yet. Call your APIs once, then save setup and run checks.'
-      : endpointsWithBaseline === 0
-        ? `APIs are tracked (${fmt(trackedEndpoints)}), but no baseline is uploaded yet. Set Up APIs and upload baseline files.`
+      : endpointsWithTargets === 0
+        ? `APIs are tracked (${fmt(trackedEndpoints)}), but no targets are uploaded yet. Set Up APIs and upload target files.`
         : runnableWatchJobs.length === 0
           ? 'Setup is saved but no runnable watch jobs are configured yet. Click Save & Apply Setup.'
           : !hasRecentRuns
             ? 'Setup is ready. Run checks now to create the first monitoring run.'
-            : `Core workflow is ready: ${fmt(trackedEndpoints)} API${trackedEndpoints === 1 ? '' : 's'} tracked, ${fmt(endpointsWithBaseline)} with baseline, ${fmt(runnableWatchJobs.length)} runnable watches.`;
+            : `Core workflow is ready: ${fmt(trackedEndpoints)} API${trackedEndpoints === 1 ? '' : 's'} tracked, ${fmt(endpointsWithTargets)} with targets, ${fmt(runnableWatchJobs.length)} runnable watches.`;
   const message = state.projectWorkflowMessage || { text: readinessText, kind: 'info' as const };
   ui.projectWorkflowFeedback.textContent = message.text || '';
   ui.projectWorkflowFeedback.className = `feedback${message.kind === 'error' ? ' danger' : message.kind === 'success' ? ' success' : ' info'}`;
@@ -2189,7 +2189,7 @@ function renderProjectWorkflowPanel() {
     const topRiskProject = summary.top_risk_project || null;
     const healthyProjects = summary.healthy_projects ?? projectRows.filter((item) => String(item.status || '').toLowerCase() === 'healthy').length;
     const degradedProjects = summary.degraded_projects ?? projectRows.filter((item) => String(item.status || '').toLowerCase() !== 'healthy').length;
-    const projectsWithBaseline = summary.projects_with_baseline ?? projectRows.filter((item) => Number(item.baseline?.coverage_pct || 0) >= 70).length;
+    const projectsWithTargets = summary.projects_with_baseline ?? projectRows.filter((item) => Number(item.baseline?.coverage_pct || 0) >= 70).length;
     const averageRisk = summary.average_risk_score ?? (
       projectRows.length
         ? projectRows.reduce((acc, item) => acc + Number(item.risk_score || 0), 0) / projectRows.length
@@ -2214,12 +2214,12 @@ function renderProjectWorkflowPanel() {
         : decision.label === 'Needs attention'
           ? 'Review the highest-risk project first, then compare it with the rest of the portfolio.'
           : 'The portfolio looks safe for now. Keep watching the highest-risk project and recheck weekly.')
-      : 'Keep the portfolio view open while you review project health and baseline coverage.';
+      : 'Keep the portfolio view open while you review project health and target coverage.';
     ui.projectWorkflowMonitor.innerHTML = `
       <div class="row-card">
         <strong>Portfolio Health</strong>
         <div class="tiny" style="margin-top:6px;">
-          Projects: ${fmt(monitor.count || projectRows.length)} • Baseline coverage: ${fmt(projectsWithBaseline)} • Generated: ${fmtDate(monitor.generated_at)}
+          Projects: ${fmt(monitor.count || projectRows.length)} • Target coverage: ${fmt(projectsWithTargets)} • Generated: ${fmtDate(monitor.generated_at)}
         </div>
         <div class="metric-row" style="margin-top:12px;">
           ${monitorCards}
@@ -2381,11 +2381,11 @@ function renderIncidents() {
       return `Expected ${fmt(item?.baseline_used)} -> Actual ${fmt(item?.actual_value)}`;
     }
     if (expected === 0) {
-      return `Expected 0 -> Actual ${fmt(actual)} (baseline is zero)`;
+      return `Expected 0 -> Actual ${fmt(actual)} (target is zero)`;
     }
     const ratio = Math.abs(actual / expected);
     const ratioLabel = ratio >= 100 ? `${ratio.toFixed(0)}x` : `${ratio.toFixed(1)}x`;
-    return `Expected ${fmt(expected)} -> Actual ${fmt(actual)} (${ratioLabel} baseline)`;
+    return `Expected ${fmt(expected)} -> Actual ${fmt(actual)} (${ratioLabel} vs target)`;
   };
   const hasActiveFilters = Boolean((state.incidentStatusFilter || '').trim() || (state.incidentSeverityFilter || '').trim());
   const activeFilterParts: string[] = [];
@@ -2487,7 +2487,7 @@ function renderIncidents() {
                 <details class="issue-priority-details issue-card-rank">
                   <summary>${incidentDecisionLabel(item)} - why this was flagged</summary>
                   <div class="tiny muted">${escapeHtml(trimCopy(incidentWhyThisMatters(item), 180))}</div>
-                  <div class="tiny muted" style="margin-top:4px;">${escapeHtml(trimCopy(item.change_since_last_healthy_run || 'Compared with baseline.', 160))}</div>
+                  <div class="tiny muted" style="margin-top:4px;">${escapeHtml(trimCopy(item.change_since_last_healthy_run || 'Compared with targets.', 160))}</div>
           <div class="tiny muted" style="margin-top:4px;">Priority score ${Math.round(businessPriorityScore(item))} • ${businessPriorityBand(item)} priority • ${escapeHtml(businessPriorityBreakdown(item).join(' • '))}</div>
                 </details>
                 <div class="toolbar compact issue-card-actions">
@@ -2496,7 +2496,7 @@ function renderIncidents() {
                     <summary aria-label="More actions for issue ${item.id}" title="More actions for issue ${item.id}">⋯</summary>
                     <div class="more-actions-menu">
                       <button class="action secondary" type="button" onclick="confirmIncident(${item.id}, 'acknowledged', 0)">Mark In Review</button>
-                      <button class="action secondary" type="button" onclick="quickFixBaseline(${item.id})">Accept as Baseline</button>
+                      <button class="action secondary" type="button" onclick="quickFixBaseline(${item.id})">Accept as Target</button>
                       <button class="action warn" type="button" onclick="confirmIncident(${item.id}, 'resolved', 0)">Resolve</button>
                       <button class="action ghost" type="button" onclick="openApi('${String(item.endpoint_path).replace(/'/g, "\\\\'")}')">Open API</button>
                     </div>
@@ -3086,7 +3086,7 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
     const modelAutoSuggestReady = Boolean(modelAdvice?.ready);
     const modelHasAnyCandidates = Boolean(modelAdvice && modelAdvice.candidateCount > 0);
     const suggestCopy = responseModelMissing
-      ? 'Define a Pydantic response model first. Jin needs it to discover fields and time candidates before setup can be saved.'
+      ? 'No response_model detected. Jin can infer Segment, Metric, and Time from runtime traffic or a pasted sample payload.'
       : suggestSummary
       ? `${suggestSummary.headline} ${suggestSummary.details}`
       : (modelAutoSuggestReady
@@ -3109,8 +3109,8 @@ export function renderFieldRoles(fields: FieldRole[] = [], config: Record<string
             : 'Tip: Select at least one group and one measurable number for the best results.'}
         </div>
         <div class="toolbar" style="margin-top:20px; justify-content:center;">
-          <button class="action" id="save-config-story-button" type="button" onclick="saveConfig()" ${responseModelMissing ? 'disabled title="Define response_model first."' : ''}>
-            ${responseModelMissing ? 'Define response_model first' : 'Save configuration and continue to baselines'}
+          <button class="action" id="save-config-story-button" type="button" onclick="saveConfig()">
+            Save configuration and continue to references
           </button>
         </div>
           <div class="row-card" style="margin-top:14px; text-align:left;">
@@ -3150,7 +3150,7 @@ function renderApiDetail(detail: EndpointDetail) {
   void ui.apiWorkspace.offsetWidth;
   ui.apiWorkspace.classList.add('api-workspace-entering');
   ui.apiTitle.textContent = detail.endpoint_path;
-  ui.apiSubtitle.textContent = 'Review health, baselines, checks, and issues.';
+  ui.apiSubtitle.textContent = 'Review health, targets, checks, and issues.';
   ui.apiMethod.textContent = detail.http_method || 'GET';
   ui.apiPath.textContent = detail.endpoint_path;
   const templateBase = `/jin/template/${slug(detail.endpoint_path)}`;
@@ -3211,7 +3211,7 @@ function renderApiDetail(detail: EndpointDetail) {
       <div class="wizard-step-connector"></div>
       <div class="wizard-step ${activeStep === 2 ? 'active' : ''}" data-api-tab="uploads" data-wizard-step="uploads" onclick="switchApiTab('uploads')">
         <div class="wizard-step-icon">2</div>
-        <div class="wizard-step-label">Set baselines</div>
+        <div class="wizard-step-label">Upload targets</div>
       </div>
       <div class="wizard-step-connector"></div>
       <div class="wizard-step ${activeStep === 3 ? 'active' : ''}" data-api-tab="history" data-wizard-step="history" onclick="switchApiTab('history')">
@@ -3294,14 +3294,14 @@ function renderApiDetail(detail: EndpointDetail) {
         <div class="kpi-card">
           <strong>${friendlyMetricLabel(item.kpi_field)}</strong>
           <span>${fmt(item.actual_value)}</span>
-          <div class="delta">${item.expected_value == null ? 'No baseline yet. Upload a reference to compare.' : `Baseline ${fmt(item.expected_value)}${item.pct_change == null ? '' : ` • ${fmt(item.pct_change)}% vs baseline`}`}</div>
+          <div class="delta">${item.expected_value == null ? 'No targets yet. Upload a reference to compare.' : `Target ${fmt(item.expected_value)}${item.pct_change == null ? '' : ` • ${fmt(item.pct_change)}% vs target`}`}</div>
         </div>
       `).join('') : `
         <div class="empty empty-starter">
           ${hasTrends
             ? (hasReferenceRows
               ? 'Recent API values are available below. Expand Monitor runs to see segment-level comparisons.'
-              : 'Recent API values are available below, but no baseline is linked yet. Upload a reference file to enable pass/fail checks.')
+              : 'Recent API values are available below, but no targets are linked yet. Upload a reference file to enable pass/fail checks.')
             : 'No values yet. Upload a reference file and run a check to get started.'}
         </div>
       `;
@@ -3335,7 +3335,7 @@ function renderApiDetail(detail: EndpointDetail) {
           <strong>Uploads</strong>
           <div class="chart-value">${(detail.upload_activity || []).length} reference events</div>
           <div class="tiny">Latest upload: ${fmtDate((detail.upload_activity || [])[0]?.uploaded_at)}</div>
-          <div class="tiny" style="margin-top:8px;">Use the Uploads tab to add or replace baseline files.</div>
+          <div class="tiny" style="margin-top:8px;">Use the Uploads tab to add or replace target files.</div>
           <div class="toolbar" style="margin-top:10px;">
             <button class="action secondary tiny" type="button" onclick="openUploadsTab()">Open Uploads</button>
           </div>
@@ -3364,7 +3364,7 @@ function renderApiDetail(detail: EndpointDetail) {
         }
       : !baselineDone
         ? {
-            title: 'Step 2: Set baselines',
+            title: 'Step 2: Upload targets',
             copy: 'Upload a reference file so checks have a clear target.',
             cta: 'Open Uploads',
             action: "switchApiTab('uploads')",
@@ -3419,7 +3419,7 @@ function renderApiDetail(detail: EndpointDetail) {
               <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
                 <div style="display:flex; align-items:center; gap:8px;">
                   <div class="wizard-step-icon" style="width:20px; height:20px; font-size:10px;">2</div>
-                  <strong>Set baselines</strong>
+                  <strong>Upload targets</strong>
                 </div>
                 ${stepBadge(baselineDone, setupDone && !baselineDone)}
               </div>
@@ -3445,7 +3445,7 @@ function renderApiDetail(detail: EndpointDetail) {
                 </div>
                 ${stepBadge(monitorDone && openIssueCount === 0, monitorDone && openIssueCount > 0)}
               </div>
-              <p>Review anomalies and decide expected baseline vs real incident.</p>
+              <p>Review issues and decide if the API changed or the uploaded targets need an update.</p>
               <button class="action secondary tiny" style="margin-top:10px;" onclick="setView('incidents')">Review Issues</button>
             </div>
             <div class="starter-step ${reviewDone ? 'active-step' : ''}">
@@ -3488,7 +3488,7 @@ function renderApiDetail(detail: EndpointDetail) {
     } else if (!hasRuns && activeStep === 3) {
       monitoringProgress.dataset.endpoint = detail.endpoint_path;
       monitoringProgress.dataset.source = 'empty-analysis';
-      monitoringProgress.innerHTML = emptyState('Upload a baseline and run analysis to see per-segment results here.');
+      monitoringProgress.innerHTML = emptyState('Upload targets and run analysis to see per-segment results here.');
       monitoringProgress.style.display = 'block';
     } else if (currentEndpoint !== detail.endpoint_path || currentSource === 'upload-analysis' || currentSource === 'empty-analysis') {
       monitoringProgress.dataset.endpoint = detail.endpoint_path;
@@ -3505,10 +3505,10 @@ function renderApiDetail(detail: EndpointDetail) {
     if (Number.isFinite(actual) && Number.isFinite(baseline) && baseline !== 0) {
       const pct = ((actual - baseline) / Math.abs(baseline)) * 100;
       const direction = pct >= 0 ? 'higher' : 'lower';
-      return `API returned ${fmt(actual)}; baseline is ${fmt(baseline)} (${Math.abs(pct).toFixed(1)}% ${direction}).`;
+      return `API returned ${fmt(actual)}; target is ${fmt(baseline)} (${Math.abs(pct).toFixed(1)}% ${direction}).`;
     }
     if (Number.isFinite(actual)) {
-      return `API returned ${fmt(actual)}. Baseline is not available for comparison.`;
+      return `API returned ${fmt(actual)}. Target is not available for comparison.`;
     }
     return item.why_flagged || item.ai_explanation || 'No details yet.';
   };
@@ -3527,7 +3527,7 @@ function renderApiDetail(detail: EndpointDetail) {
           </div>
           <div class="api-issue-card-summary">${escapeHtml(issueSummary(item))}</div>
           <div class="api-issue-card-meta tiny muted">
-            Detected ${fmtDate(item.detected_at)} • Baseline ${item.baseline_used == null ? 'not set' : fmt(item.baseline_used)}
+            Detected ${fmtDate(item.detected_at)} • Target ${item.baseline_used == null ? 'not set' : fmt(item.baseline_used)}
           </div>
           <div class="toolbar compact api-issue-card-actions">
             <button class="action ghost" type="button" onclick="showIncident(${item.id})">Open issue</button>
@@ -3724,8 +3724,8 @@ function renderApiDetail(detail: EndpointDetail) {
       if (status === 'no_baseline') {
         return {
           pillClass: 'acknowledged',
-          label: 'Needs baseline',
-          tooltip: 'Values were captured, but this segment does not have an uploaded baseline yet.',
+          label: 'Needs targets',
+          tooltip: 'Values were captured, but this segment does not have uploaded targets yet.',
         };
       }
       return {
@@ -3761,7 +3761,7 @@ function renderApiDetail(detail: EndpointDetail) {
                   <td><span class="status-pill ${statusMeta.pillClass}" title="${escapeHtml(statusMeta.tooltip)}">${escapeHtml(statusMeta.label)}</span></td>
                   <td>
                     ${run.status === 'no_baseline'
-                      ? '<button class="action secondary tiny" onclick="openUploadsTab()">Set baseline</button>'
+                      ? '<button class="action secondary tiny" onclick="openUploadsTab()">Upload targets</button>'
                       : `<button class="action ghost tiny" onclick="showRunDetail('${run.observed_at}')">Examine details</button>`}
                   </td>
                 </tr>
@@ -3926,7 +3926,7 @@ function renderApiDetail(detail: EndpointDetail) {
           </tbody>
         </table></div>
         ${renderPagination('uploads', pagedUploadEvents.page, pagedUploadEvents.totalPages)}
-      ` : `${uploadHistoryBlock}${emptyState('No baseline rows are stored for this API yet.')}`;
+      ` : `${uploadHistoryBlock}${emptyState('No target rows are stored for this API yet.')}`;
 
   renderFieldRoles(detail.fields || [], detail.setup_config || detail.config || {}, detail.metrics || [], detail);
   renderSavedViews();
@@ -4165,11 +4165,11 @@ function renderReports(payload: any = null) {
   const healthSummary = summaryPayload.summary || {};
   const activeAnomalies = Array.isArray(summaryPayload.active_anomalies) ? summaryPayload.active_anomalies : [];
   const digestTotals = digestPayload.totals || {};
-  const endpointBaseline = endpointPayload?.baseline || {};
+  const endpointReferences = endpointPayload?.references || endpointPayload?.baseline || {};
   const anomaliesCount = Number(healthSummary.anomalies || 0);
   const unconfirmedCount = Number(healthSummary.unconfirmed || 0);
   const riskLevel = anomaliesCount >= 8 ? 'high' : ((anomaliesCount > 0 || unconfirmedCount > 0) ? 'medium' : 'low');
-  const coverageRaw = Number(endpointBaseline.coverage_pct ?? 0);
+  const coverageRaw = Number(endpointReferences.coverage_pct ?? 0);
   const coveragePct = Number.isFinite(coverageRaw) ? Math.max(0, Math.min(100, coverageRaw)) : 0;
   const generatedAt = payload.generated_at ? fmtDate(payload.generated_at) : fmtDate(new Date().toISOString());
   const decision = anomaliesCount > 0
@@ -4186,7 +4186,7 @@ function renderReports(payload: any = null) {
     ? 'Needs attention: review Issues next and resolve high-priority changes before sharing this report.'
     : unconfirmedCount > 0
       ? 'Block release: set up APIs next and finish setup for unconfirmed endpoints.'
-      : 'Safe for now: monitoring is stable. Share this report and keep the current baseline targets.';
+      : 'Safe for now: monitoring is stable. Share this report and keep the current targets.';
   const recommendationAction = anomaliesCount > 0
     ? { view: 'incidents', label: 'Review Issues' }
     : unconfirmedCount > 0
@@ -4291,13 +4291,13 @@ function renderReports(payload: any = null) {
       <div class="row-card reports-endpoint-card" style="margin-top:12px;">
         <strong>Endpoint Snapshot</strong>
         <div class="tiny" style="margin-top:8px;">
-          ${escapeHtml(String(endpointPayload.endpoint_path || 'Selected endpoint'))} • anomalies ${fmt(endpointPayload.anomaly_count || 0)} • baseline rows ${fmt(endpointBaseline.total_reference_rows || 0)}
+          ${escapeHtml(String(endpointPayload.endpoint_path || 'Selected endpoint'))} • anomalies ${fmt(endpointPayload.anomaly_count || 0)} • target rows ${fmt(endpointReferences.total_reference_rows || 0)}
         </div>
-        <div class="reports-coverage-track" aria-label="Endpoint baseline coverage">
+        <div class="reports-coverage-track" aria-label="Endpoint target coverage">
           <span style="width:${coveragePct.toFixed(1)}%"></span>
         </div>
         <div class="tiny" style="margin-top:6px;">
-          APIs with baseline for this endpoint: ${fmt(endpointBaseline.endpoints_with_baseline || 0)} • coverage ${fmt(coveragePct)}%
+          APIs with targets for this endpoint: ${fmt(endpointReferences.endpoints_with_baseline || 0)} • coverage ${fmt(coveragePct)}%
         </div>
       </div>
     ` : ''}
