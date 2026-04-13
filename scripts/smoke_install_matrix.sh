@@ -343,6 +343,18 @@ venv_scripts_dir() {
   echo "${venv_dir}/bin"
 }
 
+venv_python_real_bin() {
+  local venv_dir="$1"
+  local scripts_dir
+  scripts_dir="$(venv_scripts_dir "${venv_dir}")"
+  if [[ "${OS_LABEL}" == "windows" ]]; then
+    # uv expects a concrete interpreter path; on Windows that's python.exe.
+    echo "${scripts_dir}/python.exe"
+    return 0
+  fi
+  echo "${scripts_dir}/python"
+}
+
 venv_python_bin() {
   local scripts_dir
   scripts_dir="$(venv_scripts_dir "$1")"
@@ -386,7 +398,7 @@ run_pip_smoke() {
   local target
   local source
   "${PYTHON_BIN}" -m venv "${venv_dir}"
-  python_bin="$(venv_python_bin "${venv_dir}")"
+  python_bin="$(venv_python_real_bin "${venv_dir}")"
   "${python_bin}" -m pip install --upgrade pip >/dev/null
   source="$(resolve_install_source)"
   target="$(pip_install_target)"
@@ -423,7 +435,7 @@ run_uv_smoke() {
   local source
   uv_python="$(python_sys_executable "${PYTHON_BIN}")"
   uv venv "${venv_dir}" --python "${uv_python}" >/dev/null
-  python_bin="$(venv_python_bin "${venv_dir}")"
+  python_bin="$(venv_python_real_bin "${venv_dir}")"
   source="$(resolve_install_source)"
   target="$(pip_install_target)"
   require_non_empty "${target}" "uv install target"
