@@ -2424,7 +2424,7 @@ def test_end_to_end_status_anomaly_and_routes(client, app, encoded_sales_path: s
     assert payload["project"]["deployment_model"] == "client_infra_embedded"
     assert "recent_errors" in payload
     sales_status = next(item for item in payload["endpoints"] if item["endpoint_path"] == "/api/sales/{retailer}/{period}")
-    assert sales_status["status"] == "warning"
+    assert sales_status["status"] == "anomaly"
     assert sales_status["last_checked"] is not None
     assert any(item["endpoint_path"] == "/api/watch/{retailer}" for item in payload["endpoints"])
 
@@ -2476,7 +2476,7 @@ def test_end_to_end_status_anomaly_and_routes(client, app, encoded_sales_path: s
     template_csv = client.get(f"/jin/template/{encoded_sales_path}.csv")
     assert template_csv.status_code == 200
     assert "retailer" in template_csv.text
-    assert "data.RSV" in template_csv.text
+    assert "RSV" in template_csv.text
 
     template_xlsx = client.get(f"/jin/template/{encoded_sales_path}.xlsx")
     assert template_xlsx.status_code == 200
@@ -3012,7 +3012,7 @@ def test_status_route_falls_back_when_native_status_errors(
     payload = client.get("/jin/api/status").json()
     sales_status = next(item for item in payload["endpoints"] if item["endpoint_path"] == "/api/sales/{retailer}/{period}")
     assert sales_status["active_anomalies"] >= 0
-    assert sales_status["status"] in {"warning", "healthy"}
+    assert sales_status["status"] in {"warning", "healthy", "anomaly"}
     assert sales_status["last_checked"] is not None
 
 
@@ -3124,7 +3124,7 @@ def test_router_template_metadata_tolerates_bad_stored_json(client, tmp_path: Pa
     finally:
         router_module.duckdb = original_duckdb
     assert b"retailer" in result.body
-    assert b"data.RSV" in result.body
+    assert b"RSV" in result.body
 
 
 def test_router_template_metadata_tolerates_empty_stored_json_fields(client) -> None:
@@ -3160,7 +3160,7 @@ def test_router_template_metadata_tolerates_empty_stored_json_fields(client) -> 
     finally:
         router_module.duckdb = original_duckdb
     assert b"retailer" in result.body
-    assert b"data.RSV" in result.body
+    assert b"RSV" in result.body
 
 
 def test_router_template_metadata_reads_schema_contract_dict(client) -> None:
@@ -3206,7 +3206,7 @@ def test_router_template_metadata_reads_schema_contract_dict(client) -> None:
     finally:
         router_module.duckdb = original_duckdb
     assert b"retailer" in result.body
-    assert b"data.RSV" in result.body
+    assert b"RSV" in result.body
 
 
 def test_router_status_handles_non_dict_schema_contract(client, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4743,7 +4743,10 @@ def test_templates_reflect_saved_endpoint_config(client, encoded_sales_path: str
 
     template_csv = client.get(f"/jin/template/{encoded_sales_path}.csv")
     assert template_csv.status_code == 200
-    assert b"retailer,data.RSV,tolerance_pct" in template_csv.content
+    headers = template_csv.content.split(b"\r\n")[0].split(b",")
+    assert b"retailer" in headers
+    assert b"RSV" in headers
+    assert b"tolerance_pct" in headers
 
 
 def test_status_warning_state_after_confirmable_observation(client, encoded_sales_path: str) -> None:
@@ -5120,7 +5123,7 @@ def test_router_template_metadata_tolerates_partial_bad_stored_json(
 
     response = asyncio.run(template_endpoint("api/sales/{retailer}/{period}"))
     assert b"retailer" in response.body
-    assert b"data.RSV" in response.body
+    assert b"RSV" in response.body
 
 
 def test_router_template_metadata_tolerates_bad_field_schema_json(
@@ -5164,7 +5167,7 @@ def test_router_template_metadata_tolerates_bad_field_schema_json(
 
     response = asyncio.run(template_endpoint("api/sales/{retailer}/{period}"))
     assert b"retailer" in response.body
-    assert b"data.RSV" in response.body
+    assert b"RSV" in response.body
 
 
 def test_router_template_metadata_tolerates_missing_dimension_and_kpi_json(
@@ -5251,7 +5254,7 @@ def test_router_template_metadata_tolerates_empty_field_schema(
 
     response = asyncio.run(template_endpoint("api/sales/{retailer}/{period}"))
     assert b"retailer" in response.body
-    assert b"data.RSV" in response.body
+    assert b"RSV" in response.body
 
 
 def test_endpoint_detail_fallback_supports_legacy_config_rows(

@@ -300,7 +300,9 @@ def test_auth_and_comparison_branches(app, tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(middleware_module, "init_db", None)
     middleware._initialized = False
     middleware._init_db_if_needed()
-    assert middleware._initialized is False
+    # When native init is unavailable, Jin should still initialize a Python schema
+    # so uploads/reconciliation work in Python-only mode.
+    assert middleware._initialized is True
 
 
 def test_override_and_processed_item_branches(app, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

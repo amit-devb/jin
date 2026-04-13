@@ -22,6 +22,7 @@ class EndpointModelInfo:
     kpi_fields: list[str]
     metrics: list[Any] = field(default_factory=list)
     array_field_path: str | None = None
+    request_fields: list[dict[str, Any]] = field(default_factory=list)
 
     def schema_contract(self) -> dict[str, Any]:
         return build_schema_contract(self)
@@ -296,7 +297,7 @@ def classify_model(
         clean_name = str(name).lower()
         # Heuristics for "Child's Play" Discovery
         dim_keywords = {"id", "name", "type", "kind", "category", "code", "group", "retailer", "tenant", "region", "zip", "sku", "status", "period"}
-        kpi_keywords = {"amount", "price", "revenue", "value", "total", "rate", "percentage", "score", "in_stock", "units", "count", "quantity", "cost"}
+        kpi_keywords = {"amount", "price", "revenue", "value", "total", "rate", "percentage", "score", "in_stock", "units", "count", "quantity", "cost", "orders", "qty", "stock"}
 
         kind = "ignore"
         time_candidate = False
@@ -353,6 +354,7 @@ def build_schema_contract(info: EndpointModelInfo) -> dict[str, Any]:
         "fields": info.fields,
         "dimension_fields": info.dimension_fields,
         "kpi_fields": info.kpi_fields,
+        "request_fields": info.request_fields,
         "array_field_path": info.array_field_path,
         "metrics": [{"name": m.name, "dimensions": [getattr(d, "name", "") for d in m.dimensions], "calculation": getattr(m.calculation, "field", "*")} for m in info.metrics],
     }

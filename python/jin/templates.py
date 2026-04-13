@@ -27,15 +27,33 @@ def _business_dimension_fields(dimension_fields: list[str]) -> list[str]:
     return [field for field in dimension_fields if not _is_technical_dimension_field(field)]
 
 
-def _business_columns(dimension_fields: list[str], kpi_fields: list[str]) -> list[str]:
+def _business_columns(dimension_fields: list[str], kpi_fields: list[str], request_fields: list[dict[str, Any]] | None = None) -> list[str]:
     """Return the PO-facing column headers for the data sheet.
 
     Intentionally excludes internal columns like ``endpoint``, ``dimension_fields``,
     ``kpi_fields`` – those are not meaningful to a PO/QA user.
     """
+    req_dims = [f["name"] for f in request_fields or [] if f.get("kind") == "grain"]
+    # Ensure no duplicates between discovery grains and detected logic dimensions
+    all_dims = list(req_dims)
+    for d in _business_dimension_fields(dimension_fields):
+        if d not in all_dims:
+            all_dims.append(d)
+    
+    raw_columns = [*all_dims, *kpi_fields]
+    # Deduplicate by leaf name if possible to keep it clean for POs
+    leaf_counts: dict[str, int] = {}
+    for col in raw_columns:
+        leaf = _field_leaf(col)
+        leaf_counts[leaf] = leaf_counts.get(leaf, 0) + 1
+    
+    clean_columns = [
+        _field_leaf(col) if leaf_counts[_field_leaf(col)] == 1 else col
+        for col in raw_columns
+    ]
+            
     return [
-        *_business_dimension_fields(dimension_fields),
-        *kpi_fields,
+        *clean_columns,
         "tolerance_pct",
     ]
 
@@ -220,22 +238,48 @@ def _example_row(
     fields: list[dict[str, Any]] | None = None,
     *,
     columns: list[str] | None = None,
+    request_fields: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     annotations = _field_annotations(fields)
+    # Merge response fields with request fields for better type hints
+    if request_fields:
+        for rf in request_fields:
+            if "name" in rf and "annotation" in rf:
+                annotations[rf["name"]] = rf["annotation"]
+                
     examples = _field_examples(fields)
     dims = set(dimension_fields)
+    if request_fields:
+        dims.update(f["name"] for f in request_fields if f.get("kind") == "grain")
     kpis = set(kpi_fields)
-    ordered_columns = list(columns) if columns is not None else _business_columns(dimension_fields, kpi_fields)
+    
+    # Map clean columns back to original names for example lookup
+    original_map: dict[str, str] = {}
+    for field in dimension_fields + kpi_fields:
+        leaf = _field_leaf(field)
+        # Use leaf if it matches a clean column (assuming uniqueness was checked in _business_columns)
+        original_map[leaf] = field
+    
+    # Also include request fields
+    if request_fields:
+        for rf in request_fields:
+            if "name" in rf:
+                leaf = _field_leaf(rf["name"])
+                original_map[leaf] = rf["name"]
+
+    ordered_columns = list(columns) if columns is not None else _business_columns(dimension_fields, kpi_fields, request_fields)
     row: list[str] = []
     for column in ordered_columns:
         if column == "tolerance_pct":
             row.append("10")
             continue
-        if column in kpis:
-            row.append(_example_kpi_value(column, annotations.get(column, ""), examples.get(column)))
+            
+        orig = original_map.get(column, column)
+        if orig in kpis:
+            row.append(_example_kpi_value(orig, annotations.get(orig, ""), examples.get(orig)))
             continue
-        if column in dims:
-            row.append(_example_dimension_value(column, annotations.get(column, ""), examples.get(column)))
+        if orig in dims:
+            row.append(_example_dimension_value(orig, annotations.get(orig, ""), examples.get(orig)))
             continue
         row.append("")
     return row
@@ -247,13 +291,16 @@ def _example_rows(
     fields: list[dict[str, Any]] | None = None,
     *,
     columns: list[str] | None = None,
+    request_fields: list[dict[str, Any]] | None = None,
     count: int = 3,
 ) -> list[list[str]]:
     count = max(1, count)
-    base = _example_row(dimension_fields, kpi_fields, fields, columns=columns)
+    base = _example_row(dimension_fields, kpi_fields, fields, columns=columns, request_fields=request_fields)
     dims = set(dimension_fields)
+    if request_fields:
+        dims.update(f["name"] for f in request_fields if f.get("kind") == "grain")
     kpis = set(kpi_fields)
-    ordered_columns = list(columns) if columns is not None else _business_columns(dimension_fields, kpi_fields)
+    ordered_columns = list(columns) if columns is not None else _business_columns(dimension_fields, kpi_fields, request_fields)
     rows: list[list[str]] = []
     for row_index in range(count):
         current: list[str] = []
@@ -308,13 +355,14 @@ def generate_csv_template(
     dimension_fields: list[str],
     kpi_fields: list[str],
     fields: list[dict[str, Any]] | None = None,
+    request_fields: list[dict[str, Any]] | None = None,
 ) -> bytes:
     """Generate a PO-friendly CSV template – no internal columns."""
     buffer = StringIO()
     writer = csv.writer(buffer)
-    cols = _business_columns(dimension_fields, kpi_fields)
+    cols = _business_columns(dimension_fields, kpi_fields, request_fields)
     writer.writerow(cols)
-    writer.writerows(_example_rows(dimension_fields, kpi_fields, fields, columns=cols, count=3))
+    writer.writerows(_example_rows(dimension_fields, kpi_fields, fields, columns=cols, count=3, request_fields=request_fields))
     return buffer.getvalue().encode()
 
 
@@ -323,6 +371,7 @@ def generate_xlsx_template(
     dimension_fields: list[str],
     kpi_fields: list[str],
     fields: list[dict[str, Any]] | None = None,
+    request_fields: list[dict[str, Any]] | None = None,
 ) -> bytes:
     """Generate a PO-friendly XLSX template with a data sheet, instructions sheet,
     and a reference values sheet.
@@ -344,8 +393,8 @@ def generate_xlsx_template(
     kpi_fill = PatternFill("solid", fgColor="14532D") if PatternFill else None   # green tint for metric cols
     tol_fill = PatternFill("solid", fgColor="3B1C6E") if PatternFill else None   # purple for tolerance
 
-    cols = _business_columns(dimension_fields, kpi_fields)
-    visible_dimensions = _business_dimension_fields(dimension_fields)
+    cols = _business_columns(dimension_fields, kpi_fields, request_fields)
+    visible_dimensions = [c for c in cols if c != "tolerance_pct" and c not in kpi_fields]
     hidden_technical_dimensions = [
         field for field in dimension_fields if _is_technical_dimension_field(field)
     ]
@@ -366,7 +415,7 @@ def generate_xlsx_template(
             cell.alignment = Alignment(horizontal="center")
 
     # Example data rows (typed hints derived from API field metadata when available)
-    example_rows = _example_rows(dimension_fields, kpi_fields, fields, columns=cols, count=3)
+    example_rows = _example_rows(dimension_fields, kpi_fields, fields, columns=cols, count=3, request_fields=request_fields)
     for row_offset, example in enumerate(example_rows, start=2):
         for col_idx, value in enumerate(example, start=1):
             cell = data_sheet.cell(row=row_offset, column=col_idx, value=value)
@@ -456,7 +505,7 @@ def generate_xlsx_template(
     if cols:
         example_line = "  " + " | ".join(cols)
         w(r, example_line, code_font); r += 1
-        for demo_vals in _example_rows(dimension_fields, kpi_fields, fields, columns=cols, count=3):
+        for demo_vals in _example_rows(dimension_fields, kpi_fields, fields, columns=cols, count=3, request_fields=request_fields):
             w(r, "  " + " | ".join(demo_vals), code_font); r += 1
 
     instructions.freeze_panes = None

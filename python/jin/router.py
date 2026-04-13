@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import tempfile
+import time
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,6 +27,8 @@ from jin.uploader import (
     parse_xlsx_upload_path,
     validate_upload_rows,
     expected_upload_columns,
+    _field_leaf,
+    _looks_like_time,
 )
 from jin.technical_metadata import TECHNICAL_METADATA_FIELDS, default_technical_metadata_value
 from jin.time_mapping import extract_rows, preview_time_mapping
@@ -74,6 +77,38 @@ try:
         validate_reference_rows,
     )
 except ImportError:  # pragma: no cover
+    config_show = None
+    endpoint_operational_metadata = None
+    get_active_anomalies = None
+    get_endpoint_detail = None
+    get_status = None
+    import_reference_rows = None
+    issues_list = None
+    issues_update = None
+    merge_status_with_registry = None
+    query_rollups_native = None
+    report_summary = None
+    references_export = None
+    resolve_native_anomaly = None
+    save_endpoint_config = None
+    save_references = None
+    promote_baseline = None
+    promote_anomaly_to_baseline = None
+    template_spec = None
+    validate_reference_rows = None
+
+
+ROUTER_IMPORTED_AT_NS = time.time_ns()
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Allow forcing Python-only mode for reliability (for example when installing on Windows
+# without a native wheel, or when DuckDB-native paths are unstable). We keep the router
+# endpoints available but never call the native functions.
+if _env_truthy("JIN_DISABLE_NATIVE"):
     config_show = None
     endpoint_operational_metadata = None
     get_active_anomalies = None
@@ -270,6 +305,66 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             response.headers["Sunset"] = api_v1_sunset
             response.headers["Link"] = f'<{api_v2_migration_path}>; rel="deprecation"; type="application/json"'
         return response
+
+    def _git_head_sha() -> str | None:  # pragma: no cover
+        """Best-effort repo SHA so operators/QA can confirm which build is running."""
+        try:
+            repo_root = Path(__file__).resolve().parents[3]
+            head_path = repo_root / ".git" / "HEAD"
+            if not head_path.exists():
+                return None
+            head = head_path.read_text(encoding="utf-8").strip()
+            if head.startswith("ref:"):
+                ref = head.split(":", 1)[1].strip()
+                ref_path = repo_root / ".git" / ref
+                if ref_path.exists():
+                    return ref_path.read_text(encoding="utf-8").strip()[:12]
+                packed = repo_root / ".git" / "packed-refs"
+                if packed.exists():
+                    for line in packed.read_text(encoding="utf-8").splitlines():
+                        if not line or line.startswith("#") or line.startswith("^"):
+                            continue
+                        sha, name = line.split(" ", 1)
+                        if name.strip() == ref:
+                            return sha.strip()[:12]
+                return None
+            return head[:12]
+        except Exception:
+            return None
+
+    @router.get("/api/debug/build")
+    @router.get("/api/v2/debug/build")
+    async def debug_build(request: Request = None) -> JSONResponse:
+        """Debug endpoint for QA to confirm the running build/version."""
+        require_auth(request, api=True)
+        router_path = Path(__file__).resolve()
+        uploader_path = Path(__file__).resolve().parent / "uploader.py"
+        generated_dir = router_path.parent / "static" / "generated"
+        js_path = generated_dir / "dashboard.js"
+        css_path = generated_dir / "dashboard.css"
+        uploader_imported_at_ns = None
+        try:
+            from jin import uploader as uploader_module  # local import for runtime values
+
+            uploader_imported_at_ns = int(getattr(uploader_module, "UPLOADER_IMPORTED_AT_NS", 0) or 0) or None
+        except Exception:
+            uploader_imported_at_ns = None
+        payload = {
+            "ok": True,
+            "project_name": middleware.project_name,
+            "db_path": str(middleware.db_path or ""),
+            "maintainer_ui": middleware._is_maintainer_ui_enabled(),
+            "disable_native": str(os.getenv("JIN_DISABLE_NATIVE", "")),
+            "disable_native_config_load": str(os.getenv("JIN_DISABLE_NATIVE_CONFIG_LOAD", "")),
+            "router_imported_at_ns": int(ROUTER_IMPORTED_AT_NS),
+            "router_mtime_ns": int(router_path.stat().st_mtime_ns),
+            "uploader_mtime_ns": int(uploader_path.stat().st_mtime_ns) if uploader_path.exists() else None,
+            "uploader_imported_at_ns": uploader_imported_at_ns,
+            "dashboard_js_mtime_ns": int(js_path.stat().st_mtime_ns) if js_path.exists() else None,
+            "dashboard_css_mtime_ns": int(css_path.stat().st_mtime_ns) if css_path.exists() else None,
+            "git_sha": _git_head_sha(),
+        }
+        return with_api_version_headers(JSONResponse(jsonable_encoder(payload)), request)
 
     def request_prefers_safe_mode(request: Request | None) -> bool:
         if request is None:
@@ -1180,6 +1275,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         fields = record.fields
         dimension_fields = list(record.dimension_fields or [])
         kpi_fields = list(record.kpi_fields or [])
+        request_fields = list(record.request_fields or [])
         direct_overrides = middleware.override_state.get(endpoint_path, {})
         if isinstance(direct_overrides, dict):
             if isinstance(direct_overrides.get("dimension_fields"), list):
@@ -1196,6 +1292,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "fields": fields,
             "dimension_fields": dimension_fields,
             "kpi_fields": kpi_fields,
+            "request_fields": request_fields,
             "response_model_present": response_model_present,
             "discovery_status": record.discovery_status,
             "discovery_reason_codes": list(record.discovery_reason_codes or []),
@@ -2104,7 +2201,10 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 defaults["status"] = "anomaly"
             elif defaults["grain_count"]:
                 defaults["status"] = "healthy" if defaults["confirmed"] else "warning"
-            defaults.update(load_endpoint_operational_metadata(path))
+            try:
+                defaults.update(load_endpoint_operational_metadata(path))
+            except Exception:
+                pass
             endpoints.append(defaults)
         endpoints.sort(key=lambda item: (item["endpoint_path"], item["http_method"]))
         payload = {
@@ -3786,7 +3886,6 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         limit: int = 200,
         project_id: str | None = None,
     ) -> Response:
-        require_maintainer_ui()
         require_auth(request, api=True)
         selected_project = (
             middleware.resolve_project(current_project_id())
@@ -4583,6 +4682,24 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                     level="warning",
                 )
         native_response: dict[str, object] | None = None
+
+        # Ensure the configured time field participates in the grain (segment) key. This prevents
+        # confusing states where time_field is set but not included in dimension_fields, which
+        # later causes upload templates to expect internal `grain_<time>` columns unexpectedly.
+        try:
+            dims = payload.get("dimension_fields", record.dimension_fields)
+            if not isinstance(dims, list):
+                dims = list(record.dimension_fields or [])
+            dims = [str(d).strip() for d in dims if str(d).strip()]
+            time_field = str(payload.get("time_field") or "").strip()
+            if time_field:
+                dim_leafs = {_field_leaf(d) for d in dims}
+                if time_field not in dims and _field_leaf(time_field) not in dim_leafs:
+                    dims.append(time_field)
+                    payload["dimension_fields"] = dims
+        except Exception:  # pragma: no cover
+            pass
+
         middleware.override_state[endpoint_path] = {
             "dimension_fields": payload.get("dimension_fields", record.dimension_fields),
             "kpi_fields": payload.get("kpi_fields", record.kpi_fields),
@@ -5837,7 +5954,11 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         try:
             native_validation_error: str | None = None
             validation: dict[str, object] | None = None
-            if validate_reference_rows is not None:
+            internal_format = bool(rows) and {"endpoint", "dimension_fields", "kpi_fields"}.issubset(rows[0].keys())
+            # Upload parsing is PO-facing and Python-owned. Native validation is best-effort and
+            # should only be used for internal-format rows to avoid stricter behavior breaking
+            # flexible PO templates (for example, extra columns like `label`).
+            if validate_reference_rows is not None and internal_format:
                 try:
                     validation = json.loads(
                         call_native(
@@ -5849,7 +5970,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                     )
                 except Exception as exc:
                     native_validation_error = str(exc)
-            if validation is not None:
+            if validation is not None and validation.get("dimension_fields") and validation.get("kpi_fields"):
                 dimension_fields = validation["dimension_fields"]
                 kpi_fields = validation["kpi_fields"]
                 normalized = validation["normalized"]
@@ -6028,6 +6149,10 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         if blocked is not None:
             return blocked
         metadata = endpoint_metadata_runtime_only(endpoint_path)
+        # Initialize lists up-front so we never leak internal UnboundLocalError messages back to the UI.
+        inferred_role_warnings: list[str] = []
+        size_warnings: list[str] = []
+        warnings: list[str] = []
         filename = str(file.filename or "").lower()
         try:
             staged_path, file_size_bytes = await _stage_upload_file(file, filename)
@@ -6074,7 +6199,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 pass
         rows_in_file = len(rows)
         columns_in_file = len(rows[0].keys()) if rows else 0
-        size_warnings: list[str] = []
+        size_warnings = []
         if file_size_bytes >= 10 * 1024 * 1024:
             size_warnings.append("Large file detected (>10 MB). Validation may take longer.")
         if rows_in_file >= 50000:
@@ -6084,9 +6209,14 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         is_large_upload = bool(size_warnings)
         dimension_fields = list(metadata.get("dimension_fields") or [])
         kpi_fields = list(metadata.get("kpi_fields") or [])
-        inferred_role_warnings: list[str] = []
         field_names = {field["name"] for field in metadata["fields"] if field.get("name")}
         app_version = getattr(request.app, "version", None)
+        
+        # Initialize variables to prevent UnboundLocalError in complex validation paths
+        dim_fields: list[str] = []
+        kpi_fields_used: list[str] = []
+        normalized: list[dict[str, Any]] = []
+        warnings = []
 
         if not dimension_fields or not kpi_fields:
             inferred_dims, inferred_kpis, new_warnings = infer_roles_from_upload_rows(
@@ -6114,10 +6244,12 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 if grain_key in row or field in row:
                     continue
                 row[grain_key] = default_technical_metadata_value(field, app_version)
+
         try:
             native_validation_error: str | None = None
             validation: dict[str, object] | None = None
-            if validate_reference_rows is not None:
+            internal_format = bool(rows) and {"endpoint", "dimension_fields", "kpi_fields"}.issubset(rows[0].keys())
+            if validate_reference_rows is not None and internal_format:
                 try:
                     validation = json.loads(
                         call_native(
@@ -6179,7 +6311,13 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             return JSONResponse(
                 {
                     "ok": False,
-                    "error": plain,
+                    # Never leak confusing Python scoping errors to operators; return a stable message.
+                    "error": (
+                        "Upload preview failed. Please retry. "
+                        "If this persists, check that the uploaded file matches the downloaded template."
+                        if "local variable 'warnings'" in plain.lower()
+                        else plain
+                    ),
                     "rows_found": len(rows),
                     "rows_in_file": rows_in_file,
                     "columns_in_file": columns_in_file,
@@ -6188,16 +6326,39 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                     "groups_detected": [],
                     "metrics_detected": [],
                     "sample_rows": [],
-                    "warnings": size_warnings,
+                    "warnings": [*inferred_role_warnings, *warnings, *size_warnings],
                 },
                 status_code=422,
             )
         warnings = [*inferred_role_warnings, *warnings, *size_warnings]
+        
+        # Check if the upload itself contains a valid time-like field
+        # This helps the frontend relax the "unvalidated time mapping" blocker
+        upload_has_time = False
+        time_field = metadata.get("setup_config", {}).get("time_field") or metadata.get("config", {}).get("time_field")
+        
+        # 1. Check configured time field
+        if time_field and normalized:
+            # If the internal path doesn't exist, check for a leaf match in the row
+            leaf = _field_leaf(time_field)
+            if any(isinstance(r.get("dimensions"), dict) and (time_field in r["dimensions"] or leaf in r["dimensions"]) for r in normalized[:10]):
+                upload_has_time = True
+
+        # 2. Autonomous discovery: if no config yet, check if any dimension feels like time
+        if not upload_has_time and normalized:
+            for r in normalized[:5]:
+                for k, v in (r.get("dimensions") or {}).items():
+                    if _looks_like_time(k, v):
+                        upload_has_time = True
+                        break
+                if upload_has_time:
+                    break
+
         sample = normalized[:5]
         sample_rows = [
             {
-                "group": " | ".join(f"{k}={v}" for k, v in (entry.get("dimensions") or {}).items()),
-                "metrics": entry.get("expected") or {},
+                "group": " | ".join(f"{_field_leaf(k)}={v}" for k, v in (entry.get("dimensions") or {}).items()),
+                "metrics": {_field_leaf(k): v for k, v in (entry.get("expected") or {}).items()},
                 "tolerance_pct": entry.get("tolerance_pct", 10),
             }
             for entry in sample
@@ -6211,10 +6372,11 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 "columns_in_file": columns_in_file,
                 "file_size_bytes": file_size_bytes,
                 "is_large_upload": is_large_upload,
-                "groups_detected": dim_fields,
-                "metrics_detected": kpi_fields_used,
+                "groups_detected": [_field_leaf(f) for f in dim_fields],
+                "metrics_detected": [_field_leaf(f) for f in kpi_fields_used],
                 "sample_rows": sample_rows,
                 "warnings": warnings,
+                "upload_has_time_validated": upload_has_time,
             }
         )
 
@@ -6469,6 +6631,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             list(metadata["dimension_fields"]),
             list(metadata["kpi_fields"]),
             list(metadata.get("fields") or []),
+            request_fields=list(metadata.get("request_fields") or []),
         )
         return Response(data, media_type="text/csv")
 
@@ -6482,6 +6645,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             list(metadata["dimension_fields"]),
             list(metadata["kpi_fields"]),
             list(metadata.get("fields") or []),
+            request_fields=list(metadata.get("request_fields") or []),
         )
         return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 

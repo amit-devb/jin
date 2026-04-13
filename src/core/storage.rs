@@ -1,5 +1,4 @@
 use crate::core::grain::canonical_grain_key;
-#[cfg(test)]
 use crate::core::json::numeric_value;
 use crate::core::types::AnomalyResult;
 use duckdb::{params, Connection, OptionalExt};
@@ -93,49 +92,67 @@ pub fn validate_reference_upload_rows(
  if rows.is_empty() {
  return Err("Empty file".to_string());
  }
- let first = rows
- .first()
- .and_then(Value::as_object)
- .ok_or_else(|| "upload rows must be objects".to_string())?;
- let required = [
- "endpoint",
- "dimension_fields",
- "kpi_fields",
- "tolerance_pct",
- ];
- let missing: Vec<&str> = required
- .iter()
- .copied()
- .filter(|column| !first.contains_key(*column))
- .collect();
- if !missing.is_empty() {
- return Err(format!("Missing required columns: {}", missing.join(", ")));
- }
+  let first = rows
+  .first()
+  .and_then(Value::as_object)
+  .ok_or_else(|| "upload rows must be objects".to_string())?;
 
- let raw_dimensions: Vec<String> = first
- .get("dimension_fields")
- .and_then(Value::as_str)
- .unwrap_or_default()
- .split(',')
- .map(str::trim)
- .filter(|item| !item.is_empty())
- .map(ToOwned::to_owned)
- .collect();
- let raw_kpis: Vec<String> = first
- .get("kpi_fields")
- .and_then(Value::as_str)
- .unwrap_or_default()
- .split(',')
- .map(str::trim)
- .filter(|item| !item.is_empty())
- .map(ToOwned::to_owned)
- .collect();
+  let is_internal = first.contains_key("endpoint")
+  && first.contains_key("dimension_fields")
+  && first.contains_key("kpi_fields");
 
- for field in raw_dimensions.iter().chain(raw_kpis.iter()) {
- if !field_names.iter().any(|item| item == field) {
- return Err(format!("Unknown field in upload: {field}"));
- }
- }
+  if is_internal {
+  let required = [
+    "endpoint",
+    "dimension_fields",
+    "kpi_fields",
+    "tolerance_pct",
+  ];
+  let missing: Vec<&str> = required
+    .iter()
+    .copied()
+    .filter(|column| !first.contains_key(*column))
+    .collect();
+  if !missing.is_empty() {
+    return Err(format!("Missing required columns: {}", missing.join(", ")));
+  }
+  }
+
+  let raw_dimensions: Vec<String> = if is_internal {
+  first
+    .get("dimension_fields")
+    .and_then(Value::as_str)
+    .unwrap_or_default()
+    .split(',')
+    .map(str::trim)
+    .filter(|item| !item.is_empty())
+    .map(ToOwned::to_owned)
+    .collect()
+  } else {
+  Vec::new()
+  };
+
+  let raw_kpis: Vec<String> = if is_internal {
+  first
+    .get("kpi_fields")
+    .and_then(Value::as_str)
+    .unwrap_or_default()
+    .split(',')
+    .map(str::trim)
+    .filter(|item| !item.is_empty())
+    .map(ToOwned::to_owned)
+    .collect()
+  } else {
+  Vec::new()
+  };
+
+  if is_internal {
+  for field in raw_dimensions.iter().chain(raw_kpis.iter()) {
+    if !field_names.iter().any(|item| item == field) {
+    return Err(format!("Unknown field in upload: {field}"));
+    }
+  }
+  }
 
  if let Some(expected) = expected_fields {
  let row_columns: Vec<String> = first.keys().cloned().collect();
@@ -1023,7 +1040,6 @@ pub fn read_kpi_history(
  read_kpi_history_window(conn, grain_key, kpi_field, usize::MAX)
 }
 
-#[cfg(test)]
 pub fn read_kpi_history_window(
  conn: &Connection,
  grain_key: &str,

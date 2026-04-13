@@ -1,6 +1,6 @@
 # Incident Workflow
 
-Use Issues to review anomalies and decide what needs action.
+Use Issues to review mismatches and decide what needs action.
 
 ## Statuses
 
@@ -22,6 +22,6 @@ Use Issues to review anomalies and decide what needs action.
 
 1. Open Issues.
 2. Sort by priority and severity.
-3. Check the baseline and explanation.
+3. Check the uploaded reference targets and explanation.
 4. Add a note if needed.
 5. Acknowledge, snooze, suppress, or resolve.

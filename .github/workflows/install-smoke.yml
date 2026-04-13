@@ -25,8 +25,6 @@ jobs:
             method: pipx
           - os: ubuntu-latest
             method: uv
-          - os: ubuntu-latest
-            method: poetry
           - os: macos-latest
             method: pip
           - os: macos-latest
@@ -40,24 +38,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Install maturin
-        run: python -m pip install --upgrade pip maturin
-      - name: Build wheel (local)
-        env:
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        run: python -m maturin build --release --find-interpreter --strip --out dist
-      - name: Cache uv and Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/uv
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-jin-deps-${{ hashFiles('uv.lock', 'pyproject.toml', 'Cargo.toml', 'package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-jin-deps-
       - name: Install pip tooling
         if: matrix.method == 'pip'
         run: python -m pip install --upgrade pip
@@ -67,15 +47,20 @@ jobs:
       - name: Install uv tooling
         if: matrix.method == 'uv'
         uses: astral-sh/setup-uv@v4
-      - name: Install poetry tooling
-        if: matrix.method == 'poetry'
-        run: python -m pip install --upgrade pip poetry
+      - name: Cache uv downloads
+        if: matrix.method == 'uv'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-jin-uv-cache-${{ hashFiles('.github/workflows/install-smoke.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-jin-uv-cache-
       - name: Run install smoke test
         env:
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-          JIN_INSTALL_SLO_SECONDS: "30"
+          # This workflow measures the real end-user experience: install from PyPI using wheels only.
+          JIN_INSTALL_SLO_SECONDS: "20"
           JIN_ENFORCE_INSTALL_SLO: "true"
-          JIN_SMOKE_INSTALL_SOURCE: "wheel"
-          JIN_SMOKE_WHEEL_GLOB: "${{ github.workspace }}/dist/*.whl"
+          JIN_SMOKE_INSTALL_SOURCE: "pypi"
+          JIN_SMOKE_PYPI_PACKAGE: "jin-monitor"
         shell: bash
         run: ./scripts/smoke_install_matrix.sh ${{ matrix.method }}

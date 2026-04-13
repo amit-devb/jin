@@ -21,30 +21,30 @@ from jin.uploader import parse_xlsx_upload
 
 
 def test_template_columns_match_spec() -> None:
-    assert template_columns(["retailer", "period"], ["data.RSV", "data.units"]) == [
+    assert template_columns(["retailer", "period"], ["RSV", "data.units"]) == [
         "endpoint",
         "dimension_fields",
         "kpi_fields",
         "grain_retailer",
         "grain_period",
-        "expected_data.RSV",
+        "expected_RSV",
         "expected_data.units",
         "tolerance_pct",
     ]
 
 
 def test_generate_templates_round_trip() -> None:
-    csv_bytes = generate_csv_template("/api/sales", ["retailer"], ["data.RSV"])
-    assert b"retailer,data.RSV,tolerance_pct" in csv_bytes
+    csv_bytes = generate_csv_template("/api/sales", ["retailer"], ["RSV"])
+    assert b"retailer,RSV,tolerance_pct" in csv_bytes
     csv_lines = csv_bytes.decode("utf-8").splitlines()
     assert len(csv_lines) >= 4
 
-    xlsx_bytes = generate_xlsx_template("/api/sales", ["retailer"], ["data.RSV"])
+    xlsx_bytes = generate_xlsx_template("/api/sales", ["retailer"], ["RSV"])
     rows = parse_xlsx_upload(xlsx_bytes)
     assert rows[0]["retailer"] == "amazon"
     assert rows[1]["retailer"] == "shopify"
     assert rows[2]["retailer"] == "walmart"
-    assert rows[0]["data.RSV"] == "1500.50"
+    assert rows[0]["RSV"] == "1500.50"
     assert rows[0]["tolerance_pct"] == "10"
 
 
@@ -69,13 +69,13 @@ def test_templates_use_field_type_aware_examples() -> None:
 def test_templates_prefer_declared_field_examples() -> None:
     fields = [
         {"name": "retailer", "annotation": "str", "example": "walmart"},
-        {"name": "data.RSV", "annotation": "float", "example": 9876.54},
+        {"name": "RSV", "annotation": "float", "example": 9876.54},
     ]
 
     csv_bytes = generate_csv_template(
         "/api/sales",
         ["retailer"],
-        ["data.RSV"],
+        ["RSV"],
         fields=fields,
     )
     text = csv_bytes.decode("utf-8")
@@ -85,23 +85,23 @@ def test_templates_prefer_declared_field_examples() -> None:
     xlsx_bytes = generate_xlsx_template(
         "/api/sales",
         ["retailer"],
-        ["data.RSV"],
+        ["RSV"],
         fields=fields,
     )
     rows = parse_xlsx_upload(xlsx_bytes)
     assert rows[0]["retailer"] == "walmart"
-    assert str(rows[0]["data.RSV"]) == "9876.54"
+    assert str(rows[0]["RSV"]) == "9876.54"
 
 
 def test_csv_template_example_row_keeps_header_alignment_with_technical_dimensions() -> None:
-    csv_bytes = generate_csv_template("/api/sales", ["retailer", "api_version"], ["data.RSV"])
+    csv_bytes = generate_csv_template("/api/sales", ["retailer", "api_version"], ["RSV"])
     lines = csv_bytes.decode("utf-8").splitlines()
     assert len(lines) >= 4
     header = lines[0].split(",")
     first_sample = lines[1].split(",")
     second_sample = lines[2].split(",")
     third_sample = lines[3].split(",")
-    assert header == ["retailer", "data.RSV", "tolerance_pct"]
+    assert header == ["retailer", "RSV", "tolerance_pct"]
     assert len(first_sample) == len(header)
     assert len(second_sample) == len(header)
     assert len(third_sample) == len(header)
@@ -153,23 +153,23 @@ def test_template_helper_functions_cover_branch_cases() -> None:
     assert _example_kpi_value("custom_metric", "", example=99.1) == "99.1"
     assert _example_kpi_value("other_metric", "") == "100"
 
-    assert _business_columns(["retailer", "api_version"], ["data.RSV"]) == ["retailer", "data.RSV", "tolerance_pct"]
+    assert _business_columns(["retailer", "api_version"], ["RSV"]) == ["retailer", "RSV", "tolerance_pct"]
     assert _col_letter(1) == "A"
     assert _col_letter(26) == "Z"
     assert _col_letter(27) == "AA"
 
 
 def test_convert_po_rows_to_internal_and_default_values() -> None:
-    row = {"retailer": "amazon", "data.RSV": "1200"}
-    converted = _internal_from_row(row, "/api/sales", ["retailer"], ["data.RSV"])
+    row = {"retailer": "amazon", "RSV": "1200"}
+    converted = _internal_from_row(row, "/api/sales", ["retailer"], ["RSV"])
     assert converted["endpoint"] == "/api/sales"
     assert converted["dimension_fields"] == "retailer"
-    assert converted["kpi_fields"] == "data.RSV"
+    assert converted["kpi_fields"] == "RSV"
     assert converted["grain_retailer"] == "amazon"
-    assert converted["expected_data.RSV"] == "1200"
+    assert converted["expected_RSV"] == "1200"
     assert converted["tolerance_pct"] == "10"
 
-    batch = convert_po_rows_to_internal([row], "/api/sales", ["retailer"], ["data.RSV"])
+    batch = convert_po_rows_to_internal([row], "/api/sales", ["retailer"], ["RSV"])
     assert batch[0] == converted
 
 

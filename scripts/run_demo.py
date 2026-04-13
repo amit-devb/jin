@@ -30,13 +30,13 @@ def main() -> int:
     spec.loader.exec_module(module)
 
     demo_db_prefix = Path(__file__).resolve().parents[1] / "demo-jin.duckdb"
-    print("Resetting demo state before launch.")
-    for candidate in demo_db_prefix.parent.glob(demo_db_prefix.name + "*"):
-        if candidate.is_file() or candidate.is_symlink():
-            candidate.unlink(missing_ok=True)
+    # print("Resetting demo state before launch.")
+    # for candidate in demo_db_prefix.parent.glob(demo_db_prefix.name + "*"):
+    #     if candidate.is_file() or candidate.is_symlink():
+    #         candidate.unlink(missing_ok=True)
 
-    print("Starting internal maintainer demo harness at http://127.0.0.1:8000/jin")
-    uvicorn.run(module.app, host="127.0.0.1", port=8000, reload=False)
+    print("Starting internal maintainer demo harness at http://127.0.0.1:8080/jin")
+    uvicorn.run(module.app, host="127.0.0.1", port=8080, reload=False)
     return 0
 
 

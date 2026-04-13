@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from jin import JinMiddleware
+from jin.router import create_router
 from jin.watch import watch
 
 
@@ -71,7 +72,22 @@ class WatchPayload(BaseModel):
 
 
 app = FastAPI(title="Jin Demo")
+
+# Initialize Jin and explicitly mount the router for the demo
+jin = JinMiddleware(app, db_path="./demo-jin.duckdb", global_threshold=10.0)
+app.include_router(create_router(jin), prefix="/jin")
+
 app.add_middleware(JinMiddleware, db_path="./demo-jin.duckdb", global_threshold=10.0)
+
+
+@app.on_event("startup")
+async def startup_event():
+    # Force discovery on the shared instance to populate the dashboard immediately
+    jin._init_db_if_needed()
+    jin._discover_routes(app)
+    # Ensure scheduler is started and jobs are registered for the demo instance
+    jin._register_scheduler_jobs()
+    jin.scheduler.start()
 
 
 @app.get("/", include_in_schema=False)
@@ -89,7 +105,7 @@ def _get_revenue_data(retailer: str, dates: list[str] | None, compared_dates: li
                 row = conn.execute("SELECT revenue, orders FROM revenue WHERE retailer = ? AND period = ? LIMIT 1", [retailer, d]).fetchone()
                 if row: data_points.append(RevenueDataPoint(date=d, revenue=row[0], orders=row[1], label=label))
         add_points(dates, "current")
-        add_points(compared_dates, "baseline")
+        add_points(compared_dates, "comparison")
         if not data_points: raise HTTPException(status_code=404, detail="No revenue data found")
         return RevenueResponse(retailer=retailer, data=data_points)
     finally:
@@ -153,7 +169,7 @@ def _get_inventory_data(retailer: str, sku_group: str, dates: list[str] | None, 
                             )
                         )
         add_points(dates, "current")
-        add_points(compared_dates, "baseline")
+        add_points(compared_dates, "comparison")
         if not data_points: raise HTTPException(status_code=404, detail="No inventory data found")
         return InventoryResponse(retailer=retailer, data=data_points)
     finally:

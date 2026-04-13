@@ -478,7 +478,7 @@ def test_router_endpoint_detail_native_config_and_template_native(
     )
     template_csv = client.get(f"/jin/template/{encoded_sales_path}.csv")
     assert template_csv.status_code == 200
-    assert "data.RSV" in template_csv.text
+    assert "RSV" in template_csv.text
 
     template_xlsx = client.get(f"/jin/template/{encoded_sales_path}.xlsx")
     assert template_xlsx.status_code == 200

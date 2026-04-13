@@ -17,11 +17,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: release-wheel-linux
+            artifact_name: release-wheel-linux-x86_64
+          - os: macos-13
+            artifact_name: release-wheel-macos-x86_64
           - os: macos-latest
-            artifact_name: release-wheel-macos
+            artifact_name: release-wheel-macos-arm64
           - os: windows-latest
-            artifact_name: release-wheel-windows
+            artifact_name: release-wheel-windows-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6

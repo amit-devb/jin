@@ -7,16 +7,16 @@ Jin helps FastAPI product and data teams catch business KPI drift in API respons
 - Product owner or analyst responsible for business KPI correctness.
 
 ## Core Outcome
-- A PO can set up monitoring for one API, upload a baseline, run checks, see drift, and resolve decisions without engineering help.
+- A PO can set up monitoring for one API, upload reference targets, run checks, see mismatches, and resolve decisions without engineering help.
 
 ## P0 Scope (Must Ship)
 1. API setup flow
 - Assign segment fields, KPI fields, and time field.
 - Save config successfully.
 
-2. Baseline flow
+2. Reference targets flow
 - Download CSV/XLSX template.
-- Upload baseline file with clear validation feedback.
+- Upload a reference/targets file with clear validation feedback.
 
 3. Monitoring flow
 - Trigger or schedule checks.

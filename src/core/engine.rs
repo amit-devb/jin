@@ -3,9 +3,9 @@ use crate::core::json::{flatten_json, numeric_value};
 use crate::core::storage;
 use crate::core::storage::{
     active_anomalies_payload, checkpoint, endpoint_detail_payload_with_limits,
-    import_reference_rows, init_schema, next_id, reference_value, resolve_anomaly,
-    resolve_endpoint_config, resolve_matching_anomaly, save_endpoint_config, save_references,
-    status_payload, upsert_anomaly, upsert_endpoint_record,
+    import_reference_rows, init_schema, next_id, read_kpi_history_window, reference_value,
+    resolve_anomaly, resolve_endpoint_config, resolve_matching_anomaly, save_endpoint_config,
+    save_references, status_payload, upsert_anomaly, upsert_endpoint_record,
 };
 use crate::core::types::{
     AnomalyResult, ComparisonResult, Config, ProcessResult, ReconciliationSummary, RequestPayload,
@@ -86,9 +86,10 @@ fn distinct_history_points(history: &[f64]) -> usize {
     distinct.len()
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 fn anomaly_priority(method: &str) -> i32 {
     match method {
+        "reconciliation" => 4,
         "reference" => 3,
         "statistical" => 2,
         "threshold" => 1,
@@ -133,7 +134,7 @@ fn anomaly_confidence(method: &str, pct_change: f64, tolerance_pct: f64) -> f64 
     ((base + (relative * 0.15)) * 100.0).round() / 100.0
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 fn choose_preferred_anomaly(candidates: &[AnomalyResult]) -> Option<AnomalyResult> {
     candidates.iter().cloned().max_by(|left, right| {
         anomaly_priority(&left.method)
@@ -142,7 +143,6 @@ fn choose_preferred_anomaly(candidates: &[AnomalyResult]) -> Option<AnomalyResul
     })
 }
 
-#[cfg(test)]
 fn effective_tolerance(config: &Config) -> f64 {
     match config.active_tolerance.as_str() {
         "relaxed" => config.tolerance_relaxed,
@@ -337,22 +337,43 @@ fn process_observation_value(
         let reference =
             reference_value(conn, &grain_key, kpi_field).map_err(|err| err.to_string())?;
         references_by_kpi.insert(kpi_field.clone(), reference);
-        let mut selected_method: Option<&str> = None;
+
+        let mut expected_val = None;
+        let mut tolerance_val = None;
+        let mut method = None;
+
         if let Some((expected, tolerance)) = reference {
+            expected_val = Some(expected);
+            tolerance_val = Some(tolerance);
+            method = Some("reconciliation");
+        } else {
+            let history = read_kpi_history_window(conn, &grain_key, kpi_field, 1)
+                .map_err(|err| err.to_string())?;
+            if let Some(prev) = history.first() {
+                expected_val = Some(*prev);
+                tolerance_val = Some(effective_tolerance(config));
+                method = Some("threshold");
+            }
+        }
+
+        if let (Some(expected), Some(tolerance), Some(detection_method)) =
+            (expected_val, tolerance_val, method)
+        {
             let pct_change = pct_delta(actual, expected);
             let is_mismatch = pct_change.abs() > tolerance
                 && materially_different(actual, expected, tolerance);
+
             if is_mismatch {
                 let selected = AnomalyResult {
                     kpi_field: kpi_field.clone(),
                     actual,
                     expected,
                     pct_change,
-                    method: "reconciliation".to_string(),
+                    method: detection_method.to_string(),
                     severity: anomaly_severity(pct_change),
                     priority: anomaly_business_priority(&anomaly_severity(pct_change)),
                     correlated_with: vec![],
-                    confidence: anomaly_confidence("reference", pct_change, tolerance),
+                    confidence: anomaly_confidence(detection_method, pct_change, tolerance),
                     impact: ((actual - expected).abs()
                         * config.kpi_weights.get(kpi_field).cloned().unwrap_or(1.0)
                         * 100.0)
@@ -363,17 +384,20 @@ fn process_observation_value(
                     .map_err(|err| err.to_string())?;
                 anomalies.push(selected);
                 mismatched_checks += 1;
-                selected_method = Some("reconciliation");
             } else {
                 matched_checks += 1;
             }
+
+            for m in ["threshold", "statistical", "reference", "reconciliation"] {
+                if Some(m) != method {
+                    resolve_matching_anomaly(conn, &grain_key, kpi_field, m)
+                        .map_err(|err| err.to_string())?;
+                }
+            }
         } else {
             missing_reference_checks += 1;
-        }
-
-        for method in ["threshold", "statistical", "reference", "reconciliation"] {
-            if Some(method) != selected_method {
-                resolve_matching_anomaly(conn, &grain_key, kpi_field, method)
+            for m in ["threshold", "statistical", "reference", "reconciliation"] {
+                resolve_matching_anomaly(conn, &grain_key, kpi_field, m)
                     .map_err(|err| err.to_string())?;
             }
         }
@@ -382,33 +406,40 @@ fn process_observation_value(
     let mut comparisons = Vec::new();
     for (kpi_field, value) in &kpis {
         let actual = value.as_f64().unwrap_or(0.0);
-        let reference = if let Some(cached) = references_by_kpi.get(kpi_field) {
-            *cached
+        let reference = references_by_kpi.get(kpi_field).cloned().flatten();
+
+        let mut expected = None;
+        let mut tolerance = None;
+        let mut reconciliation_status = "missing_reference".to_string();
+
+        if let Some((e, t)) = reference {
+            expected = Some(e);
+            tolerance = Some(t);
+            let pct = pct_delta(actual, e);
+            if pct.abs() > t && materially_different(actual, e, t) {
+                reconciliation_status = "mismatch".to_string();
+            } else {
+                reconciliation_status = "match".to_string();
+            }
         } else {
-            reference_value(conn, &grain_key, kpi_field).map_err(|err| err.to_string())?
-        };
-        let (expected, tolerance) = match reference {
-            Some((e, t)) => (Some(e), Some(t)),
-            None => (None, None),
-        };
+            let history = read_kpi_history_window(conn, &grain_key, kpi_field, 1)
+                .map_err(|err| err.to_string())?;
+            if let Some(prev) = history.first() {
+                expected = Some(*prev);
+                let t = effective_tolerance(config);
+                tolerance = Some(t);
+                let pct = pct_delta(actual, *prev);
+                if pct.abs() > t && materially_different(actual, *prev, t) {
+                    reconciliation_status = "mismatch".to_string();
+                } else {
+                    reconciliation_status = "match".to_string();
+                }
+            }
+        }
+
         let delta = expected.map(|e| actual - e);
         let delta_pct = expected.map(|e| pct_delta(actual, e));
-        let is_mismatch = match (expected, tolerance, delta_pct) {
-            (Some(_), Some(t), Some(pct)) => {
-                pct.abs() > t
-                    && expected
-                        .map(|reference_value| materially_different(actual, reference_value, t))
-                        .unwrap_or(false)
-            }
-            _ => false,
-        };
-        let reconciliation_status = if expected.is_none() {
-            "missing_reference".to_string()
-        } else if is_mismatch {
-            "mismatch".to_string()
-        } else {
-            "match".to_string()
-        };
+
         comparisons.push(ComparisonResult {
             kpi_field: kpi_field.clone(),
             actual,

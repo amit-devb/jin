@@ -69,6 +69,31 @@ except ImportError:  # pragma: no cover
     native_validate_reference_rows = None
     native_verify_core = None
 
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+if _env_truthy("JIN_DISABLE_NATIVE"):
+    native_auth_status = None
+    native_config_show = None
+    native_doctor_core = None
+    native_endpoints_list = None
+    native_env_check = None
+    native_get_endpoint_detail = None
+    native_init_db = None
+    native_import_reference_rows = None
+    native_issues_list = None
+    native_issues_update = None
+    native_local_urls = None
+    native_project_status = None
+    native_references_export = None
+    native_report_summary = None
+    native_save_endpoint_config = None
+    native_sync_registry = None
+    native_template_spec = None
+    native_validate_reference_rows = None
+    native_verify_core = None
+
 try:
     import duckdb
 except ImportError:  # pragma: no cover

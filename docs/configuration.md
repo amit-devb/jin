@@ -29,4 +29,4 @@ Upload CSV or XLSX references for the business grain you want to monitor.
 1. Define a typed Pydantic response model.
 2. Open `/jin` and review the detected fields.
 3. Confirm dimensions, KPIs, and time.
-4. Upload a baseline file.
+4. Upload a reference targets file.

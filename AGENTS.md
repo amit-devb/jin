@@ -1,8 +1,8 @@
 # Jin — AGENTS.md
 
 ## Mission
-Build and maintain Jin as a Rust-first data quality product for FastAPI teams.
-Keep Python thin and framework-native. Keep durable business logic, anomaly decisions,
+Build and maintain Jin as a Rust-first reconciliation product for FastAPI teams.
+Keep Python thin and framework-native. Keep durable business logic, issue decisions,
 and persistence behavior in Rust whenever practical.
 
 Do not stop at scaffolding. Carry work through implementation, tests, and verification.
@@ -11,7 +11,7 @@ Do not stop at scaffolding. Carry work through implementation, tests, and verifi
 Jin is:
 - FastAPI middleware that monitors API response quality at the business grain level
 - A mounted operator surface at `/jin`
-- A Rust core that owns anomaly detection, persistence, config resolution, and status/detail shaping
+- A Rust core that owns reconciliation issue shaping, persistence, config resolution, and status/detail shaping
 - A thin Python wrapper that owns FastAPI/Pydantic integration and scheduler wiring
 
 ## Architecture Contract
@@ -30,13 +30,13 @@ Jin is:
 - Grain-key construction
 - DuckDB schema creation and persistence helpers
 - Observation processing
-- Threshold, reference, and statistical anomaly detection
-- Anomaly precedence and resolution
+- Reference-based reconciliation and issue shaping
+- Issue precedence and resolution
 - Config save/load/resolve behavior
 - Reference save/import behavior
 - Status aggregation
 - Endpoint-detail payload shaping
-- Active anomaly listing and resolution
+- Active issue listing and resolution
 
 ## Current Repo Layout
 
@@ -101,8 +101,8 @@ Jin is done for a pass when:
 - docs reflect the current architecture and workflow
 
 ## Remaining Product Work
-The highest-value remaining work after the current baseline is:
-- deeper Rust anomaly sophistication and edge-case handling
+The highest-value remaining work after the current milestone is:
+- deeper Rust reconciliation edge-case handling
 - stricter DuckDB boundary fidelity if we want a fully literal shared-connection design
 - thinner normalized schema handoff from Python reflection into Rust
 - more scheduler operational depth

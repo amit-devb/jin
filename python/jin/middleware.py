@@ -58,6 +58,23 @@ except ImportError:  # pragma: no cover
     sync_registry = None
     get_status = None
 
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Operators should be able to force Python-only mode (useful for cross-OS packaging
+# and when native storage is unavailable/locked). When disabled, we keep the native
+# symbols importable but never call them.
+if _env_truthy("JIN_DISABLE_NATIVE"):
+    init_db = None
+    load_saved_endpoint_config = None
+    promote_baseline = None
+    process_observation = None
+    process_observations = None
+    resolve_endpoint_config = None
+    sync_registry = None
+    get_status = None
+
 
 _connections: dict[str, tuple[Any, Lock]] = {}
 API_V1_SUNSET = "Thu, 31 Dec 2026 23:59:59 GMT"
@@ -78,6 +95,7 @@ class EndpointRecord:
     array_field_path: str | None = None
     discovery_status: str = "ready"
     discovery_reason_codes: list[str] = field(default_factory=list)
+    request_fields: list[dict[str, Any]] = field(default_factory=list)
 
 
 class JinMiddleware(BaseHTTPMiddleware):
@@ -1814,10 +1832,155 @@ class JinMiddleware(BaseHTTPMiddleware):
                         pass
                     self._test_conn = None
                 self._initialized = True
+                return
             except Exception as e:
                 self.logger.error(f"Failed to initialize Jin database at {self.db_path}: {e}")
-                if "Assertion failed" in str(e) or "dict_offset" in str(e):
-                    self.logger.error("DuckDB Assertion Failure detected. This usually means the DB file is corrupted or version-mismatched. Please delete it.")
+                if "assertion failed" in str(e).lower() or "dict_offset" in str(e).lower():
+                    self.logger.error(
+                        "DuckDB Assertion Failure detected. This usually means the DB file is corrupted or version-mismatched. Please delete it."
+                    )
+                # If native init fails, we do not silently fall back: this signals
+                # potential corruption/version mismatch and operators should delete
+                # or quarantine the DB file. (Python-only mode is handled when init_db
+                # is absent/disabled.)
+                return
+
+        # Python-only fallback schema path (used when native is disabled or unavailable).
+        try:
+            import duckdb as py_duckdb  # type: ignore
+        except ImportError:
+            return
+        try:
+            with self.db_lock():
+                conn = py_duckdb.connect(self.db_path)
+                try:
+                    # Core tables used by the reconciliation-first operator surface.
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS jin_endpoints (
+                          endpoint_path TEXT,
+                          http_method TEXT,
+                          pydantic_schema TEXT,
+                          dimension_fields TEXT,
+                          kpi_fields TEXT,
+                          config_source TEXT DEFAULT 'auto',
+                          created_at TIMESTAMP DEFAULT now(),
+                          PRIMARY KEY (endpoint_path, http_method)
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS jin_anomalies (
+                          id BIGINT PRIMARY KEY,
+                          endpoint_path TEXT,
+                          grain_key TEXT,
+                          kpi_field TEXT,
+                          expected_value DOUBLE,
+                          actual_value DOUBLE,
+                          pct_change DOUBLE,
+                          detection_method TEXT,
+                          detected_at TIMESTAMP DEFAULT now(),
+                          resolved_at TIMESTAMP,
+                          is_active BOOLEAN DEFAULT true,
+                          ai_explanation TEXT
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS jin_reference (
+                          id BIGINT PRIMARY KEY,
+                          endpoint_path TEXT,
+                          grain_key TEXT,
+                          kpi_field TEXT,
+                          expected_value DOUBLE,
+                          tolerance_pct DOUBLE DEFAULT 10.0,
+                          uploaded_at TIMESTAMP DEFAULT now(),
+                          upload_source TEXT
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS jin_config (
+                          endpoint_path TEXT PRIMARY KEY,
+                          dimension_overrides TEXT,
+                          kpi_overrides TEXT,
+                          tolerance_relaxed DOUBLE DEFAULT 20.0,
+                          tolerance_normal DOUBLE DEFAULT 10.0,
+                          tolerance_strict DOUBLE DEFAULT 5.0,
+                          active_tolerance TEXT DEFAULT 'normal',
+                          tolerance_pct DOUBLE DEFAULT 10.0,
+                          confirmed BOOLEAN DEFAULT false,
+                          rows_path TEXT,
+                          time_end_field TEXT,
+                          time_profile TEXT DEFAULT 'auto',
+                          time_extraction_rule TEXT DEFAULT 'single',
+                          time_format TEXT,
+                          time_field TEXT,
+                          time_granularity TEXT DEFAULT 'minute',
+                          time_pin INTEGER DEFAULT 0,
+                          updated_at TIMESTAMP DEFAULT now()
+                        )
+                        """
+                    )
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS rows_path TEXT")
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_end_field TEXT")
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_profile TEXT DEFAULT 'auto'")
+                    conn.execute(
+                        "ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_extraction_rule TEXT DEFAULT 'single'"
+                    )
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_format TEXT")
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_field TEXT")
+                    conn.execute(
+                        "ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_granularity TEXT DEFAULT 'minute'"
+                    )
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_pin INTEGER DEFAULT 0")
+
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS jin_incident_state (
+                          anomaly_id BIGINT PRIMARY KEY,
+                          incident_status TEXT DEFAULT 'active',
+                          note TEXT,
+                          owner TEXT,
+                          resolution_reason TEXT,
+                          snoozed_until TIMESTAMP,
+                          suppressed_until TIMESTAMP,
+                          updated_at TIMESTAMP DEFAULT now()
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS jin_incident_events (
+                          id BIGINT PRIMARY KEY,
+                          anomaly_id BIGINT,
+                          event_type TEXT,
+                          note TEXT,
+                          owner TEXT,
+                          resolution_reason TEXT,
+                          payload_json TEXT,
+                          created_at TIMESTAMP DEFAULT now()
+                        )
+                        """
+                    )
+
+                    self._ensure_watch_config_schema(conn)
+                    self._ensure_check_runs_schema(conn)
+                    self._ensure_upload_analysis_schema(conn)
+
+                    try:
+                        conn.execute("CHECKPOINT")
+                    except Exception:
+                        pass
+                finally:
+                    conn.close()
+            self._initialized = True
+        except Exception as e:  # pragma: no cover
+            self.logger.error("Python fallback schema init failed for %s: %s", self.db_path, e)
+            return
 
     @contextmanager
     def db_lock(self):
@@ -2047,8 +2210,9 @@ class JinMiddleware(BaseHTTPMiddleware):
             return False
         return self.authenticate_credentials(username, password)
 
-    def _discover_routes(self, request: Request) -> None:
-        for route in request.app.routes:
+    def _discover_routes(self, request: Any) -> None:
+        app = getattr(request, "app", request)
+        for route in app.routes:
             if not isinstance(route, APIRoute):
                 continue
             path = route.path
@@ -2087,6 +2251,37 @@ class JinMiddleware(BaseHTTPMiddleware):
                     else route_watch_config.get("default_params", {})
                 ),
             }
+            # Extract Request-side Grains (Path, Query, Body)
+            request_fields = []
+            if hasattr(route, "dependant"):
+                # Path/Query params
+                for param in route.dependant.query_params + route.dependant.path_params:
+                    p_type = getattr(param, "type_", getattr(param, "annotation", str))
+                    request_fields.append({
+                        "name": param.name,
+                        "kind": "grain",
+                        "annotation": str(getattr(p_type, "__name__", str(p_type))),
+                        "source": "query" if param in route.dependant.query_params else "path",
+                        "required": True
+                    })
+                # Body params (for POST-as-GET reads)
+                for body in route.dependant.body_params:
+                    b_type = getattr(body, "type_", getattr(body, "annotation", None))
+                    if inspect.isclass(b_type) and issubclass(b_type, BaseModel):
+                        body_fields, _, _, _ = classify_model(b_type)
+                        for bf in body_fields:
+                            bf["source"] = "body"
+                            bf["kind"] = "grain"
+                            request_fields.append(bf)
+                    else:
+                        request_fields.append({
+                            "name": body.name,
+                            "kind": "grain",
+                            "annotation": str(getattr(b_type, "__name__", "str")),
+                            "source": "body",
+                            "required": True
+                        })
+
             self.endpoint_registry[path] = EndpointRecord(
                 method=method,
                 path=path,
@@ -2100,6 +2295,7 @@ class JinMiddleware(BaseHTTPMiddleware):
                 watch_config=merged_watch_config,
                 discovery_status=discovery_status,
                 discovery_reason_codes=discovery_reason_codes,
+                request_fields=request_fields,
             )
         self._sync_endpoint_registry_to_db()
 
@@ -2179,6 +2375,7 @@ class JinMiddleware(BaseHTTPMiddleware):
                             kpi_fields=record.kpi_fields,
                             metrics=record.metrics,
                             array_field_path=record.array_field_path,
+                            request_fields=record.request_fields,
                         )
                     ),
                 }
@@ -2306,6 +2503,10 @@ class JinMiddleware(BaseHTTPMiddleware):
         data: Any,
         config_json: str,
     ) -> None:
+        # If native is disabled/unavailable, don't attempt native calls (they create noisy
+        # "NoneType is not callable" operator warnings). Go straight to the Python path.
+        native_available = process_observation is not None or process_observations is not None
+
         array_items = None
         if isinstance(data, list):
             array_items = data
@@ -2326,6 +2527,12 @@ class JinMiddleware(BaseHTTPMiddleware):
                 self.logger.warning(f"Jin: expected list at {record.array_field_path}, got {type(curr)}")
 
         if array_items is not None:  # pragma: no cover
+            if not native_available:
+                for item in array_items:
+                    fallback_result = self._build_python_observation_result(record, request_json, item)
+                    self._mirror_python_state(record, fallback_result, item)
+                self.license_client.increment_usage(len(array_items))
+                return
             self.logger.info(f"Jin: processing {len(array_items)} observation item(s)")
             prefixed_items = []
             prefix = f"{record.array_field_path}[]."
@@ -2366,6 +2573,11 @@ class JinMiddleware(BaseHTTPMiddleware):
                     self._mirror_python_state(record, fallback_result, item)
             self.license_client.increment_usage(len(array_items))
         else:
+            if not native_available:
+                fallback_result = self._build_python_observation_result(record, request_json, data)
+                self._mirror_python_state(record, fallback_result, data)
+                self.license_client.increment_usage(1)
+                return
             try:
                 await self._record_processed_item_async(record, endpoint_path, method, request_json, data, config_json)
             except Exception as exc:
@@ -3381,15 +3593,33 @@ class JinMiddleware(BaseHTTPMiddleware):
         method = record.method.upper()
         callable_params = set(inspect.signature(record.endpoint_callable).parameters)
 
-        for key in self._path_param_names(record.path):
-            value = dimensions.get(key)
-            if value not in (None, ""):
-                path_params[key] = value
-
-        for key, value in dimensions.items():
-            if key in path_params or key in query_params:
+        # 1. Precise placement using discovered request grains
+        handled_keys: set[str] = set()
+        for rf in record.request_fields:
+            name = rf["name"]
+            source = rf.get("source")
+            val = dimensions.get(name)
+            if val is None or val == "":
                 continue
-            if value in (None, ""):
+                
+            if source == "path":
+                path_params[name] = val
+                handled_keys.add(name)
+            elif source == "query":
+                query_params[name] = val
+                handled_keys.add(name)
+            elif source == "body":
+                if isinstance(body, dict):
+                    # For nested body fields, we search for the top-level key
+                    # currently simple flat injection for MVP
+                    body[name] = val
+                    handled_keys.add(name)
+
+        # 2. Heuristic fallback for any remaining dimensions (Legacy Support)
+        for key, value in dimensions.items():
+            if key in handled_keys or value in (None, ""):
+                continue
+            if key in path_params or key in query_params:
                 continue
             if key in {"api_version"}:
                 continue
@@ -3401,27 +3631,19 @@ class JinMiddleware(BaseHTTPMiddleware):
                 continue
             if "[]" in key or "." in key:
                 continue
-            # If the endpoint callable exposes this name directly, keep it as a direct argument.
+            
+            # Brute force path param matching for MVP coverage of unmapped dynamic paths
+            if f"{{{key}}}" in record.path:
+                path_params[key] = value
+                continue
+
             if key in callable_params:
                 query_params[key] = value
                 continue
-            # For write methods, prefer body dimensions so grain fields can drive POST/PATCH payloads.
             if method in {"POST", "PUT", "PATCH"} and isinstance(body, dict):
                 body.setdefault(key, value)
                 continue
             query_params[key] = value
-
-        if record.method.upper() in {"POST", "PUT", "PATCH"} and isinstance(body, dict):
-            for key, value in dimensions.items():
-                if value in (None, ""):
-                    continue
-                if key in {"api_version"}:
-                    continue
-                if "[]" in key or "." in key:
-                    continue
-                if key in path_params or key in query_params:
-                    continue
-                body.setdefault(key, value)
 
         return {
             "path_params": path_params,

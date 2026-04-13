@@ -13,7 +13,7 @@ Jin learns the API shape from the Pydantic response model first.
 ## What You Provide
 
 - a typed FastAPI `response_model`
-- a flat CSV or XLSX baseline
+- a flat CSV or XLSX reference targets file
 
 ## Simple Rule
 
@@ -36,4 +36,4 @@ Jin can flatten a response like this:
 }
 ```
 
-It then maps the same business grain to your baseline file.
+It then maps the same business grain to your reference targets file.

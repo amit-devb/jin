@@ -2261,15 +2261,29 @@ async function saveConfig() {
 (window as any).saveConfig = saveConfig;
 
 function referenceSetupBlockers(detail: any): string[] {
+  // Prefer manual setup, fallback to auto-detected config for 'Child's Play' UX
   const setup = detail?.setup_config || detail?.config || {};
   const blockers: string[] = [];
   const dims = Array.isArray(setup?.dimension_fields) ? setup.dimension_fields : [];
   const kpis = Array.isArray(setup?.kpi_fields) ? setup.kpi_fields : [];
+  const timeField = String(setup?.time_field || '').trim();
+  
+  // High-fidelity fallback: if strict config is missing, check if discovery fields exist
+  const hasAutoFields = Array.isArray(detail?.fields) && detail.fields.some((f: any) => f.kind === 'dimension' || f.kind === 'kpi');
+  const isConfirmed = setup?.confirmed === true;
+
+  if (!dims.length && !hasAutoFields) blockers.push('Segment');
+  if (!kpis.length && !hasAutoFields) blockers.push('Metric');
+  
   const timeRequired = setupRequiresTimeField(detail, setup);
-  if (!dims.length) blockers.push('Segment');
-  if (!kpis.length) blockers.push('Metric');
-  if (timeRequired && !String(setup?.time_field || '').trim()) blockers.push('Time');
-  if (setup?.confirmed === false) blockers.push('Save configuration');
+  const hasTimeCandidate = Array.isArray(detail?.fields) && detail.fields.some((f: any) => f.time_candidate || f.suggested_role === 'time');
+  
+  if (timeRequired && !timeField && !hasTimeCandidate) blockers.push('Time');
+  
+  // We only block on 'Save configuration' if dims/kpis are literally empty AND discovery failed
+  if (!isConfirmed && (!dims.length || !kpis.length)) {
+      blockers.push('Save configuration');
+  }
   return blockers;
 }
 
@@ -2337,17 +2351,22 @@ async function previewUpload() {
     }
     ui.uploadPreviewStep.style.display = '';
     if (!result.ok) {
+      const rawError = String(result.error || 'Unexpected error.');
+      const normalizedError = rawError.toLowerCase();
+      const displayError = normalizedError.includes("local variable 'warnings'")
+        ? 'Upload preview failed due to a server bug. Restart Jin (or upgrade to the latest build) and retry Check file.'
+        : rawError;
       ui.uploadPreviewBody.innerHTML = `
             <div class="upload-preview-error">
               <strong>Problem with your file</strong>
-              <div style="margin-top:6px;">${result.error || 'Unexpected error.'}</div>
+              <div style="margin-top:6px;">${escapeHtml(displayError)}</div>
               ${(result.warnings || []).length
           ? `<ul style="margin-top:8px;">${result.warnings.map((w: string) => `<li>${w}</li>`).join('')}</ul>`
           : ''}
             </div>
           `;
       ui.uploadConfirmToolbar.style.display = 'none';
-      ui.uploadFeedback.textContent = result.error || 'File check failed.';
+      ui.uploadFeedback.textContent = displayError || 'File check failed.';
     } else {
       const rowsInFile = Number(result.rows_in_file || result.rows_found || 0);
       const columnsInFile = Number(result.columns_in_file || 0);
@@ -2386,7 +2405,7 @@ async function previewUpload() {
           const ratioPct = sampleCount > 0 ? Math.round((successCount / sampleCount) * 100) : 0;
           const confidenceTone = sampleCount === 0 ? 'info' : successCount === sampleCount ? 'success' : (successCount > 0 ? 'info' : 'danger');
           const confidenceLabel = sampleCount === 0
-            ? 'Not validated yet'
+            ? (Boolean(result.upload_has_time_validated) ? 'Validated (Upload)' : 'Not validated yet')
             : successCount === sampleCount
               ? `Strong (${ratioPct}%)`
               : successCount > 0
@@ -2395,11 +2414,12 @@ async function previewUpload() {
           const warningRows = Array.isArray(mappingPayload?.summary?.warnings)
             ? mappingPayload.summary.warnings
             : [];
+          const mappingSourceLabel = sampleCount === 0 && Boolean(result.upload_has_time_validated) ? 'upload content' : mappingSource;
           mappingConfidenceHtml = `
             <div class="feedback ${confidenceTone}" style="margin-top:10px;">
               <strong>Time mapping confidence: ${escapeHtml(confidenceLabel)}</strong>
               <div class="tiny" style="margin-top:6px;">
-                Parsed ${fmt(successCount)}/${fmt(sampleCount)} sample row(s) • source: ${escapeHtml(mappingSource)}.
+                Parsed ${fmt(sampleCount === 0 ? result.rows_found : successCount)}/${fmt(sampleCount || result.rows_found)} sample row(s) • source: ${escapeHtml(mappingSourceLabel)}.
               </div>
               ${warningRows.length
                 ? `<div class="tiny muted" style="margin-top:6px;">${escapeHtml(String(warningRows[0]))}</div>`
@@ -2413,9 +2433,13 @@ async function previewUpload() {
           // Enforce correctness: if time is required for this API, we only allow confirming uploads
           // once the time mapping has been validated with real JSON samples.
           if (timeRequired) {
-            if (sampleCount === 0) {
+            const uploadValidated = Boolean(result.upload_has_time_validated);
+            if (sampleCount === 0 && !uploadValidated) {
               canConfirmUpload = false;
               confirmBlockReason = 'Time mapping is not validated yet (no runtime JSON samples).';
+            } else if (sampleCount === 0 && uploadValidated) {
+              // Allow confirmation because the upload itself provides a valid time field matching config
+              mappingFeedbackSuffix = ' Time mapping validated from your upload.';
             } else if (successCount !== sampleCount) {
               canConfirmUpload = false;
               confirmBlockReason = `Time mapping needs a fix (${fmt(successCount)}/${fmt(sampleCount)} samples parsed).`;

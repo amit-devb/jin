@@ -86,6 +86,11 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Install uv tooling

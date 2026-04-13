@@ -6,7 +6,7 @@ This document defines how Jin stays fast to install, reliable to run, and safe t
 
 1. Install path must not require local Rust compilation for default users.
 2. Jin must never crash route discovery because of response model shape.
-3. Jin must provide a working monitoring baseline even when native extension loading fails.
+3. Jin must provide a working reconciliation path even when native extension loading fails.
 4. CI must continuously validate install and runtime paths across major operating systems.
 
 ## Product Contract
@@ -97,7 +97,7 @@ Phase 1 (completed in current pass):
 
 Phase 2:
 
-1. Turn install SLO reporting into enforced budgets once baseline variance stabilizes.
+1. Turn install SLO reporting into enforced budgets once measurement variance stabilizes.
 2. Add structured startup diagnostics endpoint for native/fallback mode visibility.
 3. Add operator-facing reason codes when endpoints are partially discoverable.
 
@@ -105,4 +105,4 @@ Phase 3:
 
 1. Publish and validate prebuilt native acceleration artifacts per OS/Python.
 2. Introduce optional native acceleration install flow without regressing default install speed.
-3. Expand anomaly engine sophistication while preserving fallback parity contracts.
+3. Expand reconciliation issue shaping while preserving fallback parity contracts.

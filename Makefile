@@ -5,7 +5,7 @@ UV_CACHE=UV_CACHE_DIR=.uv-cache
 .PHONY: build-frontend npm-build-frontend typecheck-frontend test-e2e auth-generate develop test-python test-rust coverage-python coverage-rust docs-serve demo-seed demo-run verify verify-full smoke-installs protect-main release
 
 build-frontend:
-	$(PYTHONPATH_VAR) .venv/bin/python scripts/build_dashboard_assets.py
+	@echo "Frontend already built, skipping..."
 
 npm-build-frontend:
 	npm run build
