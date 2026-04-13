@@ -104,13 +104,22 @@ elapsed_seconds() {
 
 pick_wheel() {
   # Prefer an already-built wheel so install doesn't need Rust.
-  local candidate
-  candidate="$(ls -1 ${JIN_SMOKE_WHEEL_GLOB} 2>/dev/null | head -n 1 || true)"
-  if [[ -n "${candidate}" ]] && [[ -f "${candidate}" ]]; then
-    echo "${candidate}"
-    return 0
-  fi
-  return 1
+  # Use Python globbing to stay portable across bash implementations and
+  # Windows path formats (GitHub exposes `${{ github.workspace }}` as a Windows path).
+  "${PYTHON_BIN}" - <<'PY'
+import glob
+import os
+import sys
+
+pattern = os.environ.get("JIN_SMOKE_WHEEL_GLOB", "")
+matches = sorted(glob.glob(pattern))
+for path in matches:
+    if os.path.isfile(path):
+        # Normalize for Git Bash (backslashes can be treated as escapes).
+        print(path.replace("\\", "/"))
+        sys.exit(0)
+sys.exit(1)
+PY
 }
 
 resolve_install_source() {
@@ -204,6 +213,15 @@ run_install_with_metrics() {
   report_install_metric "${method}" "${install_seconds}"
 }
 
+require_non_empty() {
+  local value="$1"
+  local label="$2"
+  if [[ -z "${value}" ]]; then
+    echo "Smoke test internal error: ${label} is empty" >&2
+    exit 2
+  fi
+}
+
 has_pipx() {
   has_cmd pipx \
     || "${PYTHON_BIN}" -m pipx --version >/dev/null 2>&1 \
@@ -234,6 +252,29 @@ poetry_exec() {
   else
     "${SYSTEM_PYTHON_BIN}" -m poetry "$@"
   fi
+}
+
+jin_bin_from_python() {
+  # Resolve the actual console entrypoint path from within the venv.
+  # Important on Windows where the launcher may be `jin.exe`/`jin.cmd`.
+  local python_bin="$1"
+  "${python_bin}" - <<'PY'
+import sys
+import sysconfig
+from pathlib import Path
+
+scripts = Path(sysconfig.get_path("scripts"))
+candidates = ["jin.exe", "jin.cmd", "jin.bat", "jin", "jin-script.py"]
+for name in candidates:
+    p = scripts / name
+    if p.exists():
+        print(str(p).replace("\\", "/"))
+        raise SystemExit(0)
+
+# Fall back to expected location (useful for error messages)
+print(str(scripts / "jin").replace("\\", "/"))
+raise SystemExit(0)
+PY
 }
 
 run_cli_checks() {
@@ -324,17 +365,25 @@ run_pip_smoke() {
   local venv_dir="${TMP_ROOT}/pip-venv"
   local python_bin
   local target
-  local extra_args
+  local source
   "${PYTHON_BIN}" -m venv "${venv_dir}"
   python_bin="$(venv_python_bin "${venv_dir}")"
   "${python_bin}" -m pip install --upgrade pip >/dev/null
+  source="$(resolve_install_source)"
   target="$(pip_install_target)"
-  extra_args="$(pip_install_args)"
-  # shellcheck disable=SC2086
-  run_install_with_metrics "pip" "${python_bin}" -m pip install ${extra_args} "${target}"
-  # Resolve after install so we pick up the generated console script.
+  require_non_empty "${target}" "pip install target"
+
+  # Build args as an array so we never pass empty fields.
+  local -a pip_cmd
+  pip_cmd=("${python_bin}" -m pip install)
+  if [[ "${source}" == "pypi" ]]; then
+    pip_cmd+=(--only-binary=:all:)
+  fi
+  pip_cmd+=("${target}")
+  run_install_with_metrics "pip" "${pip_cmd[@]}"
+
   local jin_bin
-  jin_bin="$(venv_jin_bin "${venv_dir}")"
+  jin_bin="$(jin_bin_from_python "${python_bin}")"
   run_cli_checks "${jin_bin}" "${TMP_ROOT}/pip-runtime"
 }
 
@@ -352,16 +401,23 @@ run_uv_smoke() {
   local python_bin
   local uv_python
   local target
-  local extra_args
+  local source
   uv_python="$(python_sys_executable "${PYTHON_BIN}")"
   uv venv "${venv_dir}" --python "${uv_python}" >/dev/null
   python_bin="$(venv_python_bin "${venv_dir}")"
+  source="$(resolve_install_source)"
   target="$(pip_install_target)"
-  extra_args="$(pip_install_args)"
-  # shellcheck disable=SC2086
-  run_install_with_metrics "uv" uv pip install --python "${python_bin}" ${extra_args} "${target}"
+  require_non_empty "${target}" "uv install target"
+
+  local -a uv_cmd
+  uv_cmd=(uv pip install --python "${python_bin}")
+  if [[ "${source}" == "pypi" ]]; then
+    uv_cmd+=(--only-binary=:all:)
+  fi
+  uv_cmd+=("${target}")
+  run_install_with_metrics "uv" "${uv_cmd[@]}"
   local jin_bin
-  jin_bin="$(venv_jin_bin "${venv_dir}")"
+  jin_bin="$(jin_bin_from_python "${python_bin}")"
   run_cli_checks "${jin_bin}" "${TMP_ROOT}/uv-runtime"
 }
 
