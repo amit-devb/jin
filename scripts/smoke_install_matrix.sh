@@ -3,8 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 METHOD="${1:-all}"
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jin-install-smoke-XXXXXX")"
-export UV_CACHE_DIR="${TMP_ROOT}/uv-cache"
+TMP_ROOT=""
 PYTHON_BIN="${JIN_SMOKE_PYTHON_BIN:-python3}"
 SYSTEM_PYTHON_BIN="${JIN_SMOKE_SYSTEM_PYTHON_BIN:-python3}"
 export PYO3_USE_ABI3_FORWARD_COMPATIBILITY="${PYO3_USE_ABI3_FORWARD_COMPATIBILITY:-1}"
@@ -46,6 +45,22 @@ if [[ "${OS_LABEL}" == "windows" ]]; then
   fi
 fi
 
+make_tmp_root() {
+  # On Windows GitHub runners, `/tmp` under Git Bash does not always map to the
+  # directory used by native Windows tools. Create temp dirs via Python so
+  # `uv venv` and path checks agree on the same location.
+  if [[ "${OS_LABEL}" == "windows" ]]; then
+    "${PYTHON_BIN}" - <<'PY'
+import tempfile
+import os
+path = tempfile.mkdtemp(prefix="jin-install-smoke-")
+print(path.replace("\\", "/"))
+PY
+    return 0
+  fi
+  mktemp -d "${TMPDIR:-/tmp}/jin-install-smoke-XXXXXX"
+}
+
 resolve_executable() {
   local candidate="$1"
   if [[ "${candidate}" == */* ]]; then
@@ -59,6 +74,8 @@ resolve_executable() {
 
 PYTHON_BIN="$(resolve_executable "${PYTHON_BIN}")"
 SYSTEM_PYTHON_BIN="$(resolve_executable "${SYSTEM_PYTHON_BIN}")"
+TMP_ROOT="$(make_tmp_root)"
+export UV_CACHE_DIR="${TMP_ROOT}/uv-cache"
 
 # Resolve to a concrete Windows python.exe path that tools like uv accept.
 # `command -v python` under Git Bash can return a POSIX path without `.exe`,
@@ -69,7 +86,9 @@ python_sys_executable() {
 }
 
 cleanup() {
-  rm -rf "${TMP_ROOT}"
+  if [[ -n "${TMP_ROOT}" ]]; then
+    rm -rf "${TMP_ROOT}"
+  fi
 }
 trap cleanup EXIT
 
