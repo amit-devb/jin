@@ -2424,7 +2424,8 @@ def test_end_to_end_status_anomaly_and_routes(client, app, encoded_sales_path: s
     assert payload["project"]["deployment_model"] == "client_infra_embedded"
     assert "recent_errors" in payload
     sales_status = next(item for item in payload["endpoints"] if item["endpoint_path"] == "/api/sales/{retailer}/{period}")
-    assert sales_status["status"] == "anomaly"
+    # Reconciliation-first: without an uploaded reference, we should not call this an anomaly yet.
+    assert sales_status["status"] == "warning"
     assert sales_status["last_checked"] is not None
     assert any(item["endpoint_path"] == "/api/watch/{retailer}" for item in payload["endpoints"])
 
@@ -2749,9 +2750,10 @@ def test_direct_rust_api_round_trip(tmp_path: Path) -> None:
     status = json.loads(jin_core.get_status(str(db_path)))
 
     assert first["status"] == "learning"
-    assert second["status"] == "anomaly"
-    assert second["anomalies"][0]["method"] == "threshold"
-    assert status["endpoints"][0]["status"] == "anomaly"
+    # No uploaded reference: stay in learning mode (no mismatch issues yet).
+    assert second["status"] == "learning"
+    assert second["anomalies"] == []
+    assert status["endpoints"][0]["status"] == "warning"
 
     with duckdb.connect(str(db_path)) as conn:
         count = conn.execute("SELECT COUNT(*) FROM jin_observations").fetchone()[0]
@@ -2882,6 +2884,24 @@ def test_direct_rust_api_lists_and_resolves_anomalies(tmp_path: Path) -> None:
         json.dumps({"retailer": "amazon", "period": "YTD", "value": 100.0}),
         config,
         str(db_path),
+    )
+    # Seed an uploaded reference so reconciliation can flag mismatches.
+    jin_core.save_references(
+        str(db_path),
+        "/api/sales",
+        json.dumps(
+            {
+                "references": [
+                    {
+                        "grain_key": "/api/sales|period=YTD|retailer=amazon",
+                        "kpi_field": "value",
+                        "expected_value": 100.0,
+                        "tolerance_pct": 10.0,
+                    }
+                ]
+            }
+        ),
+        "test",
     )
     jin_core.process_observation(
         "/api/sales",

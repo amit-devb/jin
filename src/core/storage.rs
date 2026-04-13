@@ -1,4 +1,5 @@
 use crate::core::grain::canonical_grain_key;
+#[cfg(test)]
 use crate::core::json::numeric_value;
 use crate::core::types::AnomalyResult;
 use duckdb::{params, Connection, OptionalExt};
@@ -1040,6 +1041,7 @@ pub fn read_kpi_history(
  read_kpi_history_window(conn, grain_key, kpi_field, usize::MAX)
 }
 
+#[cfg(test)]
 pub fn read_kpi_history_window(
  conn: &Connection,
  grain_key: &str,

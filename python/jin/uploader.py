@@ -388,14 +388,39 @@ def validate_upload_rows(
 
         sample_val = rows[0].get(field)
         if _looks_like_time(clean_field, sample_val):
-            # Promote it!
-            raw_dimensions.append(clean_field)
-            raw_dimension_leafs.add(_field_leaf(clean_field))
-            # Ensure the row actually has the grain_ prefix so validation passes
+            # Prefer promoting to the *real API field name* when the upload uses a leaf column
+            # like `date` but the API field is `data[].date`. This avoids demanding a confusing
+            # `grain_date` column and keeps the grain aligned to API extraction.
+            promoted = clean_field
+            if clean_field not in field_names:
+                leaf = _field_leaf(clean_field)
+                matches = sorted({name for name in field_names if _field_leaf(name) == leaf})
+                if len(matches) == 1:
+                    promoted = matches[0]
+
+            # Promote it (avoid duplicates).
+            if promoted not in raw_dimensions and _field_leaf(promoted) not in raw_dimension_leafs:
+                raw_dimensions.append(promoted)
+                raw_dimension_leafs.add(_field_leaf(promoted))
+
+            # Ensure required `grain_*` column exists so downstream validation passes.
+            promoted_col = f"grain_{promoted}"
             for row in rows:
-                if f"grain_{clean_field}" not in row:
-                    row[f"grain_{clean_field}"] = row.get(field, "")
-            warnings.append(f"Auto-promoted {clean_field!r} to a dimension as it appears to be the time grain.")
+                if promoted_col in row:
+                    continue
+                # Copy from the original leaf header (e.g. `date`) if present.
+                source_value = ""
+                if field in row:
+                    source_value = row.get(field, "")
+                else:
+                    leaf = _field_leaf(clean_field)
+                    if leaf in row:
+                        source_value = row.get(leaf, "")
+                row[promoted_col] = source_value
+
+            warnings.append(
+                f"Auto-promoted {_field_leaf(promoted)!r} to a dimension as it appears to be the time grain."
+            )
             # Note: we don't break here because there might be multiple (e.g. date + period)
 
     # PO friendliness for "internal" files or manually edited templates:

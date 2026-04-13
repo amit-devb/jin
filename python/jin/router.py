@@ -1047,21 +1047,33 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             suppressed_until = until
         if action == "resolved":
             if duckdb is not None:
-                conn, lock = connection_and_lock()
-                with lock:
-                    try:
-                        conn.execute(
-                            "UPDATE jin_anomalies SET is_active = false, resolved_at = now() WHERE id = ?",
-                            [anomaly_id],
-                        )
-                    except Exception as exc:
-                        record_router_error(
-                            "router.resolve_anomaly",
-                            "Could not mark anomaly inactive in DuckDB; continuing with incident-state resolution.",
-                            detail=str(exc),
-                            hint="Check anomaly table/index consistency in the local DuckDB file.",
-                        )
-                    checkpoint_if_enabled(conn)
+                # Degraded mode: if DuckDB is unavailable/corrupted/locked, still allow the operator
+                # to resolve the issue in runtime state (and in the UI). The DB update can be retried
+                # later after restart/recovery.
+                try:
+                    conn, lock = connection_and_lock()
+                except Exception as exc:
+                    record_router_error(
+                        "router.resolve_anomaly",
+                        "Jin storage was unavailable while resolving; continuing with runtime-state resolution.",
+                        detail=str(exc),
+                        hint="Restart Jin and retry if you need the resolution persisted to DuckDB immediately.",
+                    )
+                else:
+                    with lock:
+                        try:
+                            conn.execute(
+                                "UPDATE jin_anomalies SET is_active = false, resolved_at = now() WHERE id = ?",
+                                [anomaly_id],
+                            )
+                        except Exception as exc:
+                            record_router_error(
+                                "router.resolve_anomaly",
+                                "Could not mark anomaly inactive in DuckDB; continuing with incident-state resolution.",
+                                detail=str(exc),
+                                hint="Check anomaly table/index consistency in the local DuckDB file.",
+                            )
+                        checkpoint_if_enabled(conn)
             result = {"ok": True, "id": anomaly_id}
             for endpoint_state in middleware.runtime_state.values():
                 for item in endpoint_state.get("anomalies", []):

@@ -3,7 +3,7 @@ use crate::core::json::{flatten_json, numeric_value};
 use crate::core::storage;
 use crate::core::storage::{
     active_anomalies_payload, checkpoint, endpoint_detail_payload_with_limits,
-    import_reference_rows, init_schema, next_id, read_kpi_history_window, reference_value,
+    import_reference_rows, init_schema, next_id, reference_value,
     resolve_anomaly, resolve_endpoint_config, resolve_matching_anomaly, save_endpoint_config,
     save_references, status_payload, upsert_anomaly, upsert_endpoint_record,
 };
@@ -33,7 +33,10 @@ fn observation_checkpoint_every() -> u64 {
         std::env::var("JIN_NATIVE_CHECKPOINT_EVERY")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(0)
+            // Default to 1 so the DuckDB WAL is checkpointed frequently.
+            // This keeps the DB readable from the Python DuckDB client even when
+            // the embedded/native DuckDB version differs.
+            .unwrap_or(1)
     })
 }
 
@@ -143,6 +146,7 @@ fn choose_preferred_anomaly(candidates: &[AnomalyResult]) -> Option<AnomalyResul
     })
 }
 
+#[cfg(test)]
 fn effective_tolerance(config: &Config) -> f64 {
     match config.active_tolerance.as_str() {
         "relaxed" => config.tolerance_relaxed,
@@ -338,6 +342,9 @@ fn process_observation_value(
             reference_value(conn, &grain_key, kpi_field).map_err(|err| err.to_string())?;
         references_by_kpi.insert(kpi_field.clone(), reference);
 
+        // Reconciliation-first: only compare against uploaded references.
+        // We intentionally do NOT fall back to "last observed value" baselines here,
+        // because those are unstable and contradict the PO reconciliation workflow.
         let mut expected_val = None;
         let mut tolerance_val = None;
         let mut method = None;
@@ -346,14 +353,6 @@ fn process_observation_value(
             expected_val = Some(expected);
             tolerance_val = Some(tolerance);
             method = Some("reconciliation");
-        } else {
-            let history = read_kpi_history_window(conn, &grain_key, kpi_field, 1)
-                .map_err(|err| err.to_string())?;
-            if let Some(prev) = history.first() {
-                expected_val = Some(*prev);
-                tolerance_val = Some(effective_tolerance(config));
-                method = Some("threshold");
-            }
         }
 
         if let (Some(expected), Some(tolerance), Some(detection_method)) =
@@ -386,6 +385,10 @@ fn process_observation_value(
                 mismatched_checks += 1;
             } else {
                 matched_checks += 1;
+                // If we previously had an active mismatch for this KPI+grain under the
+                // current method, resolve it now that we are back within tolerance.
+                resolve_matching_anomaly(conn, &grain_key, kpi_field, detection_method)
+                    .map_err(|err| err.to_string())?;
             }
 
             for m in ["threshold", "statistical", "reference", "reconciliation"] {
@@ -420,20 +423,6 @@ fn process_observation_value(
                 reconciliation_status = "mismatch".to_string();
             } else {
                 reconciliation_status = "match".to_string();
-            }
-        } else {
-            let history = read_kpi_history_window(conn, &grain_key, kpi_field, 1)
-                .map_err(|err| err.to_string())?;
-            if let Some(prev) = history.first() {
-                expected = Some(*prev);
-                let t = effective_tolerance(config);
-                tolerance = Some(t);
-                let pct = pct_delta(actual, *prev);
-                if pct.abs() > t && materially_different(actual, *prev, t) {
-                    reconciliation_status = "mismatch".to_string();
-                } else {
-                    reconciliation_status = "match".to_string();
-                }
             }
         }
 

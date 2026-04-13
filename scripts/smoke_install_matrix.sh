@@ -35,6 +35,17 @@ detect_os_label() {
 
 OS_LABEL="${JIN_SMOKE_OS_LABEL:-$(detect_os_label)}"
 
+# GitHub Windows runners expose `python` but not necessarily `python3`.
+# Keep override env vars working; only adjust when the user didn't force a value.
+if [[ "${OS_LABEL}" == "windows" ]]; then
+  if [[ -z "${JIN_SMOKE_PYTHON_BIN:-}" ]]; then
+    PYTHON_BIN="python"
+  fi
+  if [[ -z "${JIN_SMOKE_SYSTEM_PYTHON_BIN:-}" ]]; then
+    SYSTEM_PYTHON_BIN="python"
+  fi
+fi
+
 resolve_executable() {
   local candidate="$1"
   if [[ "${candidate}" == */* ]]; then
@@ -235,11 +246,12 @@ run_cli_checks() {
 
 resolve_cli_executable() {
   local base="$1"
-  if [[ -x "${base}" ]]; then
+  # On Windows under Git Bash, the executable bit may not be set even though the file exists.
+  if [[ -x "${base}" ]] || [[ -f "${base}" ]]; then
     echo "${base}"
     return 0
   fi
-  if [[ -x "${base}.exe" ]]; then
+  if [[ -x "${base}.exe" ]] || [[ -f "${base}.exe" ]]; then
     echo "${base}.exe"
     return 0
   fi
@@ -258,11 +270,11 @@ venv_scripts_dir() {
 venv_python_bin() {
   local scripts_dir
   scripts_dir="$(venv_scripts_dir "$1")"
-  if [[ -x "${scripts_dir}/python" ]]; then
+  if [[ -x "${scripts_dir}/python" ]] || [[ -f "${scripts_dir}/python" ]]; then
     echo "${scripts_dir}/python"
     return 0
   fi
-  if [[ -x "${scripts_dir}/python.exe" ]]; then
+  if [[ -x "${scripts_dir}/python.exe" ]] || [[ -f "${scripts_dir}/python.exe" ]]; then
     echo "${scripts_dir}/python.exe"
     return 0
   fi
@@ -272,11 +284,11 @@ venv_python_bin() {
 venv_jin_bin() {
   local scripts_dir
   scripts_dir="$(venv_scripts_dir "$1")"
-  if [[ -x "${scripts_dir}/jin" ]]; then
+  if [[ -x "${scripts_dir}/jin" ]] || [[ -f "${scripts_dir}/jin" ]]; then
     echo "${scripts_dir}/jin"
     return 0
   fi
-  if [[ -x "${scripts_dir}/jin.exe" ]]; then
+  if [[ -x "${scripts_dir}/jin.exe" ]] || [[ -f "${scripts_dir}/jin.exe" ]]; then
     echo "${scripts_dir}/jin.exe"
     return 0
   fi
