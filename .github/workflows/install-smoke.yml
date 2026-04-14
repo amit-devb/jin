@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # GitHub Actions is migrating JS actions from Node 20 to Node 24.
+  # Opt in early to avoid surprise breakage for actions like astral-sh/setup-uv.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 concurrency:
   group: install-smoke-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

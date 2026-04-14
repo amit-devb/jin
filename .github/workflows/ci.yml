@@ -17,54 +17,96 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'auto' }}
   cancel-in-progress: true
 
 jobs:
   verify:
+    name: Verify (Ubuntu)
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: "npm"
-      - uses: actions/setup-python@v6
+
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
-      - name: Cache uv and Rust dependencies
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache uv downloads
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/uv
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-jin-deps-${{ hashFiles('uv.lock', 'pyproject.toml', 'Cargo.toml', 'package-lock.json') }}
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
           restore-keys: |
-            ${{ runner.os }}-jin-deps-
+            ${{ runner.os }}-uv-py${{ steps.setup-python.outputs.python-version }}-
+            ${{ runner.os }}-uv-
+
+      - name: Cache Rust dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
       - name: Install frontend dependencies
         run: npm ci
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Create venv
-        run: uv venv .venv
-      - name: Sync project dependencies
+
+      - name: Create fresh virtual environment
+        run: |
+          rm -rf .venv
+          uv venv .venv
+
+      - name: Sync Python dependencies
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        run: uv sync --frozen --extra dev
-      - name: Verify native + Python fallback paths
+        run: uv sync --frozen --extra dev --no-install-project
+
+      - name: Run verify target
         env:
           PYTHONPATH: python
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         run: make verify
 
+      - name: Upload verify artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-debug-artifacts
+          if-no-files-found: ignore
+          path: |
+            .coverage
+            coverage.xml
+            htmlcov
+            pytest.xml
+            test-results
+            playwright-report
+
   install-smoke-fast:
+    name: Install smoke (${{ matrix.os }} / ${{ matrix.method }})
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
     strategy:
       fail-fast: false
       matrix:
@@ -74,34 +116,53 @@ jobs:
           - os: ubuntu-latest
             method: uv
           - os: macos-latest
-            method: pip
-          - os: macos-latest
             method: uv
           - os: windows-latest
             method: pip
-          - os: windows-latest
-            method: uv
+
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: Cache Rust build
+
+      - name: Install uv tooling
+        if: matrix.method == 'uv'
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Install uv tooling
-        if: matrix.method == 'uv'
-        uses: astral-sh/setup-uv@v4
-      - name: Install maturin
+
+      - name: Cache pip downloads
+        if: matrix.method == 'pip'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-py${{ steps.setup-python.outputs.python-version }}-
+            ${{ runner.os }}-pip-
+
+      - name: Install build tooling
         run: python -m pip install --upgrade pip maturin
-      - name: Build wheel (local)
+
+      - name: Build wheel
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         run: python -m maturin build --release --find-interpreter --strip --out dist
+
       - name: Run install smoke test
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
@@ -111,3 +172,13 @@ jobs:
           JIN_SMOKE_WHEEL_GLOB: "${{ github.workspace }}/dist/*.whl"
         shell: bash
         run: ./scripts/smoke_install_matrix.sh ${{ matrix.method }}
+
+      - name: Upload smoke artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-debug-${{ matrix.os }}-${{ matrix.method }}
+          if-no-files-found: ignore
+          path: |
+            dist
+            test-results
