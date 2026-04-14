@@ -459,8 +459,63 @@ def validate_upload_rows(
 
     _backfill_internal_columns()
 
+    def _backfill_expected_field_aliases(missing_fields: list[str]) -> None:
+        """Backfill missing expected template fields using leaf/full-path aliases.
+
+        This protects operators from config/template drift such as:
+        - expected `grain_data[].date` but file has `grain_date` (or `date`)
+        - expected `expected_data[].revenue` but file has `expected_revenue` (or `revenue`)
+        """
+        if not missing_fields:
+            return
+        for row_index, row in enumerate(rows, start=2):
+            keys = {str(k) for k in row.keys() if k is not None}
+            for expected_col in missing_fields:
+                if expected_col in row:
+                    continue
+                source_key: str | None = None
+                if expected_col.startswith("grain_"):
+                    dim = expected_col.removeprefix("grain_")
+                    leaf = _field_leaf(dim)
+                    # Try the closest canonical variants.
+                    candidates = [
+                        expected_col,
+                        f"grain_{leaf}",
+                        dim,
+                        leaf,
+                    ]
+                    for candidate in candidates:
+                        if candidate in keys:
+                            source_key = candidate
+                            break
+                elif expected_col.startswith("expected_"):
+                    kpi = expected_col.removeprefix("expected_")
+                    leaf = _field_leaf(kpi)
+                    candidates = [
+                        expected_col,
+                        f"expected_{leaf}",
+                        kpi,
+                        leaf,
+                    ]
+                    for candidate in candidates:
+                        if candidate in keys:
+                            source_key = candidate
+                            break
+                if source_key is None:
+                    continue
+                row[expected_col] = row.get(source_key, "")
+                msg = (
+                    f"Mapped column {source_key!r} into required template column {expected_col!r} "
+                    f"(row {row_index})."
+                )
+                if msg not in warnings:
+                    warnings.append(msg)
+
     if expected_fields is not None:
         missing = [column for column in expected_fields if column not in rows[0]]
+        if missing:
+            _backfill_expected_field_aliases(missing)
+            missing = [column for column in expected_fields if column not in rows[0]]
         if missing:
             raise ValueError(f"Upload columns do not match template: missing {', '.join(missing)}")
         extra = [column for column in rows[0].keys() if column not in expected_fields]
@@ -529,11 +584,44 @@ def validate_upload_rows(
                     entry["dimensions"][field] = _technical_default_for_field(field, defaults)
                 continue
             if column not in row:
-                raise ValueError(f"Missing required columns: {column}")
+                # Last-chance: accept leaf/full-path aliases even when template/meta drifted.
+                leaf = _field_leaf(field)
+                candidates = [
+                    f"grain_{leaf}",
+                    field,
+                    leaf,
+                ]
+                backfilled = False
+                for candidate in candidates:
+                    if candidate in row:
+                        row[column] = row.get(candidate, "")
+                        warnings.append(
+                            f"Mapped {candidate!r} into required template column {column!r} (row {index})."
+                        )
+                        backfilled = True
+                        break
+                if not backfilled:
+                    raise ValueError(f"Missing required columns: {column}")
         for field in raw_kpis:
             column = f"expected_{field}"
             if column not in row:
-                raise ValueError(f"Missing required columns: {column}")
+                leaf = _field_leaf(field)
+                candidates = [
+                    f"expected_{leaf}",
+                    field,
+                    leaf,
+                ]
+                backfilled = False
+                for candidate in candidates:
+                    if candidate in row:
+                        row[column] = row.get(candidate, "")
+                        warnings.append(
+                            f"Mapped {candidate!r} into required template column {column!r} (row {index})."
+                        )
+                        backfilled = True
+                        break
+                if not backfilled:
+                    raise ValueError(f"Missing required columns: {column}")
         entry["_row_index"] = index
         normalized.append(entry)
 

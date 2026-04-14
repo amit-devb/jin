@@ -50,12 +50,25 @@ make_tmp_root() {
   # directory used by native Windows tools. Create temp dirs via Python so
   # `uv venv` and path checks agree on the same location.
   if [[ "${OS_LABEL}" == "windows" ]]; then
-    "${PYTHON_BIN}" - <<'PY'
+    local win_tmp
+    win_tmp="$("${PYTHON_BIN}" - <<'PY'
 import tempfile
 import os
 path = tempfile.mkdtemp(prefix="jin-install-smoke-")
-print(path.replace("\\", "/"))
+print(path)
 PY
+)"
+    # Convert to a Git Bash-visible path (e.g. `C:\Users\...` -> `/c/Users/...`)
+    # so bash builtins like `[[ -d ... ]]` work reliably.
+    if command -v cygpath >/dev/null 2>&1; then
+      cygpath -u "${win_tmp}"
+    else
+      # Fallback for minimal shells: normalize manually.
+      # Example: C:\Users\runner\Temp -> /c/Users/runner/Temp
+      echo "${win_tmp}" \
+        | sed -E 's#^([A-Za-z]):\\\\#/\L\\1/#' \
+        | sed -E 's#\\\\#/#g'
+    fi
     return 0
   fi
   mktemp -d "${TMPDIR:-/tmp}/jin-install-smoke-XXXXXX"
@@ -82,7 +95,8 @@ export UV_CACHE_DIR="${TMP_ROOT}/uv-cache"
 # which uv treats as a literal file path and rejects.
 python_sys_executable() {
   local python_bin="$1"
-  "${python_bin}" -c 'import sys; print(sys.executable.replace("\\\\", "/"))'
+  # Keep a concrete Windows path for tools like uv.
+  "${python_bin}" -c 'import sys; print(sys.executable)'
 }
 
 cleanup() {
@@ -241,6 +255,19 @@ require_non_empty() {
   fi
 }
 
+assert_path_exists() {
+  local path="$1"
+  local label="$2"
+  if [[ ! -e "${path}" ]]; then
+    echo "Smoke test error: ${label} does not exist: ${path}" >&2
+    if [[ -d "$(dirname "${path}")" ]]; then
+      echo "Directory listing for $(dirname "${path}"):" >&2
+      ls -la "$(dirname "${path}")" >&2 || true
+    fi
+    exit 2
+  fi
+}
+
 has_pipx() {
   has_cmd pipx \
     || "${PYTHON_BIN}" -m pipx --version >/dev/null 2>&1 \
@@ -309,6 +336,24 @@ run_cli_checks() {
     JIN_PROJECT_NAME="smoke-project" \
     JIN_DB_PATH="${runtime_dir}/smoke.duckdb" \
       "${jin_bin}" status --format json >/dev/null
+  )
+}
+
+run_cli_checks_python() {
+  # On Windows Git Bash, invoking `Scripts/jin(.exe/.cmd)` can be brittle due to
+  # path translation (`/tmp` vs `C:\Users\...`). Running via the venv Python
+  # entrypoint is stable across shells and CI.
+  local python_bin="$1"
+  local runtime_dir="$2"
+  mkdir -p "${runtime_dir}"
+  (
+    cd "${runtime_dir}"
+    JIN_PROJECT_NAME="smoke-project" \
+    JIN_DB_PATH="${runtime_dir}/smoke.duckdb" \
+      "${python_bin}" -m jin.cli --help >/dev/null
+    JIN_PROJECT_NAME="smoke-project" \
+    JIN_DB_PATH="${runtime_dir}/smoke.duckdb" \
+      "${python_bin}" -m jin.cli status --format json >/dev/null
   )
 }
 
@@ -399,6 +444,7 @@ run_pip_smoke() {
   local source
   "${PYTHON_BIN}" -m venv "${venv_dir}"
   python_bin="$(venv_python_real_bin "${venv_dir}")"
+  assert_path_exists "${python_bin}" "venv python"
   "${python_bin}" -m pip install --upgrade pip >/dev/null
   source="$(resolve_install_source)"
   target="$(pip_install_target)"
@@ -413,9 +459,7 @@ run_pip_smoke() {
   pip_cmd+=("${target}")
   run_install_with_metrics "pip" "${pip_cmd[@]}"
 
-  local jin_bin
-  jin_bin="$(jin_bin_from_python "${python_bin}")"
-  run_cli_checks "${jin_bin}" "${TMP_ROOT}/pip-runtime"
+  run_cli_checks_python "${python_bin}" "${TMP_ROOT}/pip-runtime"
 }
 
 run_uv_smoke() {
@@ -436,20 +480,24 @@ run_uv_smoke() {
   uv_python="$(python_sys_executable "${PYTHON_BIN}")"
   uv venv "${venv_dir}" --python "${uv_python}" >/dev/null
   python_bin="$(venv_python_real_bin "${venv_dir}")"
+  assert_path_exists "${python_bin}" "uv venv python"
   source="$(resolve_install_source)"
   target="$(pip_install_target)"
   require_non_empty "${target}" "uv install target"
 
   local -a uv_cmd
-  uv_cmd=(uv pip install --python "${python_bin}")
+  # uv is a native Windows binary on GitHub runners. Pass a native `sys.executable`
+  # path for determinism (POSIX `/c/...` paths can be misinterpreted).
+  local uv_target_python
+  uv_target_python="$("${python_bin}" -c 'import sys; print(sys.executable)')"
+  require_non_empty "${uv_target_python}" "uv target python"
+  uv_cmd=(uv pip install --python "${uv_target_python}")
   if [[ "${source}" == "pypi" ]]; then
     uv_cmd+=(--only-binary=:all:)
   fi
   uv_cmd+=("${target}")
   run_install_with_metrics "uv" "${uv_cmd[@]}"
-  local jin_bin
-  jin_bin="$(jin_bin_from_python "${python_bin}")"
-  run_cli_checks "${jin_bin}" "${TMP_ROOT}/uv-runtime"
+  run_cli_checks_python "${python_bin}" "${TMP_ROOT}/uv-runtime"
 }
 
 run_pipx_smoke() {

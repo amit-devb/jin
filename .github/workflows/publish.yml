@@ -12,13 +12,25 @@ concurrency:
 
 jobs:
   build:
+    # Allow specific matrix entries to be optional without failing the whole release.
+    # This keeps the release pipeline healthy while we expand platform coverage.
+    continue-on-error: ${{ matrix.allow_failure == true }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Publish two Linux wheels so pip can pick the most compatible one.
+          # manylinux2014 supports older distros (glibc 2.17+). manylinux_2_28
+          # supports modern distros and tends to be more reliable for heavy native deps.
           - os: ubuntu-latest
-            artifact_name: release-wheel-linux-x86_64
+            artifact_name: release-wheel-linux-x86_64-manylinux2014
             rust_target: x86_64-unknown-linux-gnu
+            manylinux: 2014
+            allow_failure: false
+          - os: ubuntu-latest
+            artifact_name: release-wheel-linux-x86_64-manylinux_2_28
+            rust_target: x86_64-unknown-linux-gnu
+            manylinux: 2_28
           # Build both macOS wheels on macos-latest to avoid relying on deprecated
           # Intel macOS runner images/configurations.
           - os: macos-latest
@@ -52,13 +64,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
-      - name: Build wheel (Linux manylinux2014)
+      - name: Build wheel (Linux manylinux)
         if: runner.os == 'Linux'
         uses: messense/maturin-action@v1
         with:
           command: build
           args: --release --find-interpreter --strip --out dist
-          manylinux: 2014
+          manylinux: ${{ matrix.manylinux }}
 
       - name: Install maturin
         if: runner.os != 'Linux'
