@@ -58,3 +58,16 @@ protect-main:
 release:
 	@test -n "$(VERSION)" || (echo "Set VERSION=0.1.1" && exit 1)
 	$(PYTHONPATH_VAR) .venv/bin/python scripts/release.py --version "$(VERSION)"
+
+# Re-run a failed tag release without bumping pyproject.toml.
+# Usage:
+#   make retag-release TAG=v1.0.0 REF=main FORCE=1
+# or:
+#   make retag-release VERSION=1.0.0 REF=main FORCE=1
+retag-release:
+	@test -n "$(TAG)$(VERSION)" || (echo "Set TAG=v1.0.0 or VERSION=1.0.0" && exit 1)
+	@test "$(FORCE)" = "1" || (echo "Refusing to delete/recreate remote tag without FORCE=1" && exit 1)
+	$(PYTHONPATH_VAR) .venv/bin/python scripts/retag_release.py \
+		--tag "$(if $(TAG),$(TAG),$(VERSION))" \
+		--ref "$(if $(REF),$(REF),HEAD)" \
+		--force

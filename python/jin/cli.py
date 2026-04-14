@@ -13,6 +13,7 @@ from .cli_support import (
     command_config_set,
     command_config_show,
     command_doctor,
+    command_init_check,
     command_endpoints_list,
     command_env_check,
     command_env_set,
@@ -41,12 +42,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug", action="store_true", help="Show full tracebacks for CLI failures.")
     subparsers = parser.add_subparsers(dest="command")
 
+    check_parser = subparsers.add_parser(
+        "check",
+        help="Guided readiness check (FastAPI discovery + local Jin setup).",
+    )
+    check_parser.add_argument("--project-name")
+    check_parser.add_argument("--db-path")
+    check_parser.add_argument("--app", help="FastAPI app import path, e.g. package.module:app")
+    check_parser.add_argument("--env-file", default=".env")
+    check_parser.add_argument("--format", choices=["table", "json"], default="table")
+    check_parser.set_defaults(handler=command_init_check)
+
     init_parser = subparsers.add_parser("init", help="Create starter Jin environment settings.")
     init_parser.add_argument("--project-name")
     init_parser.add_argument("--db-path")
     init_parser.add_argument("--app", help="FastAPI app import path, e.g. package.module:app")
     init_parser.add_argument("--serve-check", action="store_true", help="Check whether the app appears to have Jin mounted.")
     init_parser.add_argument("--env-file", default=".env")
+    init_parser.add_argument("--format", choices=["table", "json"], default="table")
     init_parser.add_argument("--write", action="store_true", help="Write the generated config to .env.")
     init_parser.add_argument("--force", action="store_true", help="Overwrite .env when used with --write.")
     init_parser.add_argument(

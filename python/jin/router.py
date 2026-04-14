@@ -3868,10 +3868,13 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             "health": health_payload,
             "summary": health_payload["summary"],
             "scheduler": health_payload["scheduler"],
-            "baseline": health_payload["baseline"],
-            "references": health_payload["baseline"],
+            # Back-compat: keep `baseline` for older dashboards, but prefer `references`.
+            "baseline": health_payload.get("baseline"),
+            "references": health_payload.get("baseline"),
             "active_anomalies": active_anomalies,
             "active_issues": active_issues,
+            # Reconciliation-first naming (preferred).
+            "active_reconciliation_issues": active_issues,
         }
         if report_summary is not None:
             try:

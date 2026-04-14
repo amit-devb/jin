@@ -773,6 +773,32 @@ def command_init_check(args: argparse.Namespace) -> int:
     print("--------------")
     if app_import and not getattr(args, "app", None):
         print(f"Auto-detected FastAPI app: {app_import}")
+    output_format = str(getattr(args, "format", "table") or "table").strip().lower()
+    if output_format == "json":
+        return print_json(
+            {
+                "ok": True,
+                "project_name": project_name,
+                "db_path": db_path,
+                "env_file": env_file,
+                "auth": auth,
+                "app": {
+                    "target": app_import,
+                    "auto_detected": bool(app_import and not getattr(args, "app", None)),
+                    "detection_error": app_detection_error,
+                    "load_error": app_load_error,
+                    "jin_mounted": mounted,
+                },
+                "discovery": {
+                    "summary": discovery_summary,
+                    "examples": [
+                        {"endpoint": endpoint_path, "status": status, "reasons": reasons}
+                        for endpoint_path, status, reasons in discovery_examples
+                    ],
+                },
+                "guidance": guidance,
+            }
+        )
     print(render_text_table(summary_rows))
 
     if discovery_examples:
