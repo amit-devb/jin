@@ -18,12 +18,20 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact_name: release-wheel-linux-x86_64
-          - os: macos-13
+            rust_target: x86_64-unknown-linux-gnu
+          # Build both macOS wheels on macos-latest to avoid relying on deprecated
+          # Intel macOS runner images/configurations.
+          - os: macos-latest
             artifact_name: release-wheel-macos-x86_64
+            rust_target: x86_64-apple-darwin
+            maturin_target: x86_64-apple-darwin
           - os: macos-latest
             artifact_name: release-wheel-macos-arm64
+            rust_target: aarch64-apple-darwin
+            maturin_target: aarch64-apple-darwin
           - os: windows-latest
             artifact_name: release-wheel-windows-x86_64
+            rust_target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -42,16 +50,29 @@ jobs:
             ${{ runner.os }}-jin-release-deps-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - name: Build wheel (Linux manylinux2014)
+        if: runner.os == 'Linux'
+        uses: messense/maturin-action@v1
+        with:
+          command: build
+          args: --release --find-interpreter --strip --out dist
+          manylinux: 2014
+
       - name: Install maturin
+        if: runner.os != 'Linux'
         run: python -m pip install --upgrade pip maturin
+
       - name: Build wheel
+        if: runner.os != 'Linux'
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         shell: bash
         run: |
           args=(--release --find-interpreter --strip --out dist)
-          if [[ "${RUNNER_OS}" == "Linux" ]]; then
-            args+=(--manylinux 2014)
+          if [[ -n "${{ matrix.maturin_target }}" ]]; then
+            args+=(--target "${{ matrix.maturin_target }}")
           fi
           python -m maturin build "${args[@]}"
       - name: Upload wheel artifact
