@@ -26,11 +26,13 @@ jobs:
             artifact_name: release-wheel-linux-x86_64-manylinux2014
             rust_target: x86_64-unknown-linux-gnu
             manylinux: 2014
+            compatibility: manylinux2014
             allow_failure: false
           - os: ubuntu-latest
             artifact_name: release-wheel-linux-x86_64-manylinux_2_28
             rust_target: x86_64-unknown-linux-gnu
             manylinux: 2_28
+            compatibility: manylinux_2_28
           # Build both macOS wheels on macos-latest to avoid relying on deprecated
           # Intel macOS runner images/configurations.
           - os: macos-latest
@@ -66,26 +68,19 @@ jobs:
           targets: ${{ matrix.rust_target }}
       - name: Build wheel (Linux manylinux)
         if: runner.os == 'Linux'
+        # Use the official PyO3 action to guarantee we compile inside the correct manylinux
+        # docker image (otherwise auditwheel will reject the wheel on ubuntu-latest).
+        uses: PyO3/maturin-action@v1
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
           RUST_BACKTRACE: "1"
           CARGO_TERM_COLOR: "always"
-        shell: bash
-        run: |
-          python -m pip install --upgrade pip maturin
-          mkdir -p dist
-          # Jin publishes an abi3 wheel (cp39-abi3) so we only need one interpreter.
-          # Running maturin directly keeps stderr/stdout visible when the manylinux docker
-          # container fails (the GitHub action wrapper can hide the real cargo error).
-          maturin build \
-            --release \
-            --strip \
-            --out dist \
-            --manylinux ${{ matrix.manylinux }} \
-            # maturin needs the interpreter name to encode the version; the bare `python`
-            # binary inside manylinux images can be skipped as ambiguous.
-            --interpreter /opt/python/cp39-cp39/bin/python3.9 \
-            -vv
+        with:
+          command: build
+          # Force a single interpreter build (abi3 wheel) inside a proper manylinux docker image.
+          # The action's `manylinux:` field controls the docker image; `--compatibility` controls the wheel tag.
+          args: --release --strip --out dist --interpreter python3.9 --compatibility ${{ matrix.compatibility }} --auditwheel repair -vv
+          manylinux: ${{ matrix.manylinux }}
 
       - name: Install maturin
         if: runner.os != 'Linux'
