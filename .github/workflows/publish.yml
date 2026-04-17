@@ -82,7 +82,9 @@ jobs:
             --strip \
             --out dist \
             --manylinux ${{ matrix.manylinux }} \
-            --interpreter /opt/python/cp39-cp39/bin/python \
+            # maturin needs the interpreter name to encode the version; the bare `python`
+            # binary inside manylinux images can be skipped as ambiguous.
+            --interpreter /opt/python/cp39-cp39/bin/python3.9 \
             -vv
 
       - name: Install maturin
