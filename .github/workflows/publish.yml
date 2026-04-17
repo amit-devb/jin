@@ -19,20 +19,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Publish two Linux wheels so pip can pick the most compatible one.
-          # manylinux2014 supports older distros (glibc 2.17+). manylinux_2_28
-          # supports modern distros and tends to be more reliable for heavy native deps.
+          # Publish one Linux wheel with broad compatibility (glibc 2.17+).
+          # This is the most reliable default and avoids dual-tag platform edge cases.
           - os: ubuntu-latest
             artifact_name: release-wheel-linux-x86_64-manylinux2014
             rust_target: x86_64-unknown-linux-gnu
             manylinux: 2014
-            compatibility: manylinux2014
             allow_failure: false
-          - os: ubuntu-latest
-            artifact_name: release-wheel-linux-x86_64-manylinux_2_28
-            rust_target: x86_64-unknown-linux-gnu
-            manylinux: 2_28
-            compatibility: manylinux_2_28
           # Build both macOS wheels on macos-latest to avoid relying on deprecated
           # Intel macOS runner images/configurations.
           - os: macos-latest
@@ -78,8 +71,7 @@ jobs:
         with:
           command: build
           # Force a single interpreter build (abi3 wheel) inside a proper manylinux docker image.
-          # The action's `manylinux:` field controls the docker image; `--compatibility` controls the wheel tag.
-          args: --release --strip --out dist --interpreter python3.9 --compatibility ${{ matrix.compatibility }} --auditwheel repair -vv
+          args: --release --strip --out dist --interpreter python3.9 --auditwheel repair -vv
           manylinux: ${{ matrix.manylinux }}
 
       - name: Install maturin
