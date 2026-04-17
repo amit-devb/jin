@@ -29,6 +29,9 @@ test-rust:
 	$(PYO3_ENV) cargo test
 
 coverage-python: build-frontend
+	# Ensure the native extension is available for "native + fallback" test coverage runs.
+	# CI may skip installing the project during `uv sync` for speed.
+	$(UV_CACHE) $(PYO3_ENV) $(PYTHONPATH_VAR) .venv/bin/maturin develop
 	$(PYTHONPATH_VAR) .venv/bin/python -m coverage run --rcfile=.coveragerc -m pytest
 	$(PYTHONPATH_VAR) .venv/bin/python -m coverage report --rcfile=.coveragerc -m
 
