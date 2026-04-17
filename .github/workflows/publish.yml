@@ -59,6 +59,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
+
+      - name: Host diagnostics (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -a
+          echo "== memory =="
+          free -h || true
+          echo "== disk =="
+          df -h || true
+          echo "== ulimit =="
+          ulimit -a || true
       - name: Build wheel (Linux manylinux)
         if: runner.os == 'Linux'
         # Use the official PyO3 action to guarantee we compile inside the correct manylinux
@@ -80,6 +93,20 @@ jobs:
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
             -e RUST_BACKTRACE=1
             -e CARGO_TERM_COLOR=always
+            -e CMAKE_BUILD_PARALLEL_LEVEL=1
+            -e MAKEFLAGS=-j1
+
+      - name: Failure diagnostics (Linux)
+        if: failure() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "== docker info =="
+          docker info || true
+          echo "== docker ps -a =="
+          docker ps -a || true
+          echo "== recent kernel messages (may show OOM kills) =="
+          (sudo dmesg --ctime | tail -n 200) || (dmesg --ctime | tail -n 200) || true
 
       - name: Install maturin
         if: runner.os != 'Linux'
