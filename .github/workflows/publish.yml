@@ -64,19 +64,19 @@ jobs:
         # Use the official PyO3 action to guarantee we compile inside the correct manylinux
         # docker image (otherwise auditwheel will reject the wheel on ubuntu-latest).
         uses: PyO3/maturin-action@v1
-        env:
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-          RUST_BACKTRACE: "1"
-          CARGO_TERM_COLOR: "always"
-          # Avoid compiling DuckDB from source inside manylinux (slow / memory heavy).
-          # libduckdb-sys will download a prebuilt libduckdb and auditwheel will vendor it into the wheel.
-          DUCKDB_DOWNLOAD_LIB: "1"
         with:
           command: build
           # Force a single interpreter build (abi3 wheel) inside a proper manylinux docker image.
           # DuckDB source builds can be memory-hungry; we disable the bundled feature for release wheels.
           args: --release --strip --out dist --interpreter python3.9 --auditwheel repair -vv --jobs 2 --no-default-features --features extension-module
           manylinux: ${{ matrix.manylinux }}
+          # NOTE: env vars set on the workflow step are not guaranteed to reach the manylinux
+          # docker container. Pass them explicitly via docker run options.
+          docker-options: >-
+            -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+            -e RUST_BACKTRACE=1
+            -e CARGO_TERM_COLOR=always
+            -e DUCKDB_DOWNLOAD_LIB=1
 
       - name: Install maturin
         if: runner.os != 'Linux'
