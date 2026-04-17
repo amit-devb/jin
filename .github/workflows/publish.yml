@@ -69,8 +69,12 @@ jobs:
         uses: messense/maturin-action@v1
         with:
           command: build
-          args: --release --find-interpreter --strip --out dist
+          # Jin publishes an abi3 wheel (cp39-abi3) so we only need one interpreter.
+          # Building for every interpreter in the manylinux image is slow and more failure-prone.
+          args: --release --strip --out dist --interpreter /opt/python/cp39-cp39/bin/python -vv
           manylinux: ${{ matrix.manylinux }}
+        env:
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
 
       - name: Install maturin
         if: runner.os != 'Linux'
