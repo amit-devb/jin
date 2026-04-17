@@ -68,11 +68,14 @@ jobs:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
           RUST_BACKTRACE: "1"
           CARGO_TERM_COLOR: "always"
+          # Avoid compiling DuckDB from source inside manylinux (slow / memory heavy).
+          # libduckdb-sys will download a prebuilt libduckdb and auditwheel will vendor it into the wheel.
+          DUCKDB_DOWNLOAD_LIB: "1"
         with:
           command: build
           # Force a single interpreter build (abi3 wheel) inside a proper manylinux docker image.
-          # DuckDB bundled builds can be memory-hungry; limit parallelism for CI reliability.
-          args: --release --strip --out dist --interpreter python3.9 --auditwheel repair -vv --jobs 2
+          # DuckDB source builds can be memory-hungry; we disable the bundled feature for release wheels.
+          args: --release --strip --out dist --interpreter python3.9 --auditwheel repair -vv --jobs 2 --no-default-features --features extension-module
           manylinux: ${{ matrix.manylinux }}
 
       - name: Install maturin

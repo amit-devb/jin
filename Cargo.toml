@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = []
+default = ["duckdb-bundled"]
 extension-module = ["pyo3/extension-module", "pyo3/abi3-py39"]
+duckdb-bundled = ["duckdb/bundled"]
 
 [lib]
 name = "jin_core"
@@ -13,6 +14,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.21" }
-duckdb = { version = "1.10500.0", features = ["bundled", "serde_json"] }
+# Keep development builds self-contained via our `duckdb-bundled` feature.
+# Linux release wheels should avoid compiling DuckDB from source (too slow / memory-hungry);
+# instead they use `DUCKDB_DOWNLOAD_LIB=1` + `--no-default-features` to download a prebuilt lib.
+duckdb = { version = "1.10500.0", features = ["serde_json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
