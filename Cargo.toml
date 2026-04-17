@@ -15,8 +15,9 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.21" }
 # Keep development builds self-contained via our `duckdb-bundled` feature.
-# Linux release wheels should avoid compiling DuckDB from source (too slow / memory-hungry);
-# instead they use `DUCKDB_DOWNLOAD_LIB=1` + `--no-default-features` to download a prebuilt lib.
+# Linux release wheels intentionally compile DuckDB from source inside a manylinux container.
+# Downloaded/prebuilt libduckdb binaries are not guaranteed to be manylinux compliant and can
+# fail auditwheel checks due to GLIBC/GLIBCXX symbol/version constraints.
 duckdb = { version = "1.10500.0", features = ["serde_json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
