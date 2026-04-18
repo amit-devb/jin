@@ -88,16 +88,20 @@ jobs:
           # are not guaranteed to meet the manylinux symbol/version constraints.
           #
           # DuckDB compilation can be memory hungry; keep parallelism low to avoid OOM in CI.
-          args: --release --strip --out dist --interpreter python3.9 --auditwheel repair -vv --jobs 1 --features extension-module
+          args: --release --strip --out dist --interpreter python3.9 --auditwheel repair -vv --jobs 1 --features extension-module --locked
           manylinux: ${{ matrix.manylinux }}
           # NOTE: env vars set on the workflow step are not guaranteed to reach the manylinux
           # docker container. Pass them explicitly via docker run options.
+          # DuckDB 1.105xx hard-errors on "legacy" libstdc++ ABI builds unless an explicit platform is chosen.
+          # Force the modern ABI and set a stable platform string so extension auto-install (if enabled) has a target.
           docker-options: >-
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
             -e RUST_BACKTRACE=1
             -e CARGO_TERM_COLOR=always
             -e CMAKE_BUILD_PARALLEL_LEVEL=1
             -e MAKEFLAGS=-j1
+            -e CXXFLAGS=-D_GLIBCXX_USE_CXX11_ABI=1
+            -e CXXFLAGS_x86_64_unknown_linux_gnu=-DDUCKDB_CUSTOM_PLATFORM=linux_amd64
 
       - name: Failure diagnostics (Linux)
         if: failure() && runner.os == 'Linux'
