@@ -7,6 +7,7 @@ import hmac
 import hashlib
 import inspect
 import string
+import platform
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
@@ -102,7 +103,7 @@ class JinMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app,
-        db_path: str = "./jin.duckdb",
+        db_path: str = "./.jin/jin.duckdb",
         global_threshold: float = 10.0,
         auth_callback: Any | None = None,
         exclude_paths: list[str] | None = None,
@@ -110,6 +111,12 @@ class JinMiddleware(BaseHTTPMiddleware):
     ) -> None:
         super().__init__(app)
         self.db_path = os.getenv("JIN_DB_PATH", db_path)
+        try:
+            db_parent = Path(self.db_path).expanduser().parent
+            if str(db_parent) and str(db_parent) != ".":
+                db_parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
         self.global_threshold = global_threshold
         self.auth_callback = auth_callback
         self.exclude_paths = set(exclude_paths or ["/jin"])
@@ -2025,7 +2032,28 @@ class JinMiddleware(BaseHTTPMiddleware):
 
     def _get_connection(self):
         """Legacy helper for tests. Main code should use jin_core."""
-        if self._test_conn is not None:
+        def windows_ephemeral_duckdb_connections() -> bool:
+            # DuckDB on Windows uses stricter file locking than macOS/Linux. A long-lived
+            # Python DuckDB connection can prevent the native (Rust) DuckDB client from
+            # opening the same DB file, yielding:
+            # "IO Error: cannot open ... the process cannot access the file because it is used by another process"
+            #
+            # On Windows, prefer short-lived Python connections that are closed after each use.
+            return platform.system().lower() == "windows"
+
+        @contextmanager
+        def _scoped_lock_and_close(conn):
+            self._native_db_lock.acquire()
+            try:
+                yield
+            finally:
+                self._native_db_lock.release()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        if self._test_conn is not None and not windows_ephemeral_duckdb_connections():
             try:
                 # DuckDB can invalidate a connection after a fatal checkpoint error.
                 self._test_conn.execute("SELECT 1")
@@ -2044,12 +2072,18 @@ class JinMiddleware(BaseHTTPMiddleware):
         except ImportError:
             return None, self.db_lock()
         try:
-            self._test_conn = py_duckdb.connect(self.db_path)
+            conn = py_duckdb.connect(self.db_path)
+            if windows_ephemeral_duckdb_connections():
+                return conn, _scoped_lock_and_close(conn)
+            self._test_conn = conn
             return self._test_conn, self.db_lock()
         except Exception as exc:
             if self._is_duckdb_internal_error(exc):
                 self._quarantine_corrupt_db(exc)
-                self._test_conn = py_duckdb.connect(self.db_path)
+                conn = py_duckdb.connect(self.db_path)
+                if windows_ephemeral_duckdb_connections():
+                    return conn, _scoped_lock_and_close(conn)
+                self._test_conn = conn
                 return self._test_conn, self.db_lock()
             raise
 

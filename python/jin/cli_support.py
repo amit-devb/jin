@@ -118,7 +118,19 @@ def load_local_env(env_file: str = ".env") -> dict[str, str | None]:
 
 
 def env_db_path(cli_value: str | None = None) -> str:
-    return cli_value or os.getenv("JIN_DB_PATH", "./jin.duckdb")
+    return cli_value or os.getenv("JIN_DB_PATH", "./.jin/jin.duckdb")
+
+
+def ensure_db_parent_dir(db_path: str) -> None:
+    path = Path(db_path).expanduser()
+    parent = path.parent
+    if not str(parent) or str(parent) == ".":
+        return
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # Don't fail init on read-only or restricted filesystems.
+        return
 
 
 def env_project_name(cli_value: str | None = None) -> str:
@@ -636,7 +648,7 @@ def print_serve_check(app_path: str) -> None:
         return
     print("Serve check: Jin is not mounted yet.")
     print("  - Add JinMiddleware to your FastAPI app.")
-    print("  - Example: app.add_middleware(JinMiddleware, db_path='./jin.duckdb')")
+    print("  - Example: app.add_middleware(JinMiddleware, db_path='./.jin/jin.duckdb')")
     print("  - Then restart the app and open /jin.")
 
 
@@ -822,6 +834,7 @@ def command_init(args: argparse.Namespace) -> int:
     interactive = bool(getattr(args, "interactive", False))
     project_name = env_project_name(args.project_name)
     db_path = env_db_path(args.db_path)
+    ensure_db_parent_dir(db_path)
     app_path = getattr(args, "app", None)
     auth_enabled = bool(args.auth)
     env_file = args.env_file
@@ -1080,7 +1093,7 @@ def command_patch_fastapi(args: argparse.Namespace) -> int:
     binding_kind, app_var = detect_fastapi_binding_in_source(content, requested_app_var)
 
     middleware_line = (
-        f'{app_var}.add_middleware(JinMiddleware, db_path="{getattr(args, "db_path", "./jin.duckdb")}", '
+        f'{app_var}.add_middleware(JinMiddleware, db_path="{getattr(args, "db_path", "./.jin/jin.duckdb")}", '
         f'global_threshold={float(getattr(args, "global_threshold", 10.0))})'
     )
     marker_begin = "# jin: begin middleware"

@@ -12,7 +12,7 @@ class JinInspector:
     to assert that recent API payloads match the Product Owner's references.
     """
 
-    def __init__(self, db_path: str = "./jin.duckdb", app=None):
+    def __init__(self, db_path: str = "./.jin/jin.duckdb", app=None):
         self.db_path = db_path
         # Use JinMiddleware's utilities to grab storage safely
         self.middleware = JinMiddleware(app, db_path=db_path) if app else None

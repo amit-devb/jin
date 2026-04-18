@@ -412,6 +412,10 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         if not native_reads_enabled.get():
             raise RuntimeError("native reads disabled for this request")
         with middleware.db_lock():
+            # Ensure we don't hold a long-lived Python DuckDB connection while attempting
+            # native DuckDB reads/writes. This is especially important on Windows where
+            # file locking is stricter.
+            middleware._reset_cached_connection()
             return func(*args)
 
     def record_router_error(
