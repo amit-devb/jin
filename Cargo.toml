@@ -20,5 +20,9 @@ pyo3 = { version = "=0.21.2" }
 # Downloaded/prebuilt libduckdb binaries are not guaranteed to be manylinux compliant and can
 # fail auditwheel checks due to GLIBC/GLIBCXX symbol/version constraints.
 duckdb = { version = "=1.10500.0", features = ["serde_json"] }
+# DuckDB pulls Arrow's "prettyprint" feature which depends on `comfy-table`.
+# comfy-table v7.2.2 currently fails to compile on stable rustc in our manylinux build,
+# so we pin to a known-good version to keep Linux wheels building reliably.
+comfy-table = "=7.1.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -88,7 +88,7 @@ jobs:
           # are not guaranteed to meet the manylinux symbol/version constraints.
           #
           # DuckDB compilation can be memory hungry; keep parallelism low to avoid OOM in CI.
-          args: --release --strip --out dist --interpreter python3.9 --auditwheel repair -vv --jobs 1 --features extension-module
+          args: --release --strip --out dist --interpreter python3.9 --auditwheel repair -vv --jobs 1 --features extension-module --locked
           manylinux: ${{ matrix.manylinux }}
           # NOTE: env vars set on the workflow step are not guaranteed to reach the manylinux
           # docker container. Pass them explicitly via docker run options.

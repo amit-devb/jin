@@ -18,7 +18,6 @@ target/
 *.duckdb
 *.duckdb.wal
 *.duckdb.corrupt.*
-Cargo.lock
 node_modules/
 *.csv
 .python-version
