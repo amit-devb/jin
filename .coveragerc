@@ -7,7 +7,7 @@ omit =
     python/jin/cli_support.py
 
 [report]
-fail_under = 85
+fail_under = 88
 show_missing = True
 skip_covered = False
 exclude_lines =
