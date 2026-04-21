@@ -59,7 +59,7 @@ test('upload switches to monitor/history and shows upload analysis', async ({ pa
   const historySection = page.locator('[data-api-section="history"]');
   await expect(historySection).toBeVisible();
   await expect(historySection.getByRole('heading', { name: 'Checks' })).toBeVisible();
-  await expect(historySection.getByRole('button', { name: /Examine details|Set baseline/i }).first()).toBeVisible();
+  await expect(historySection.getByRole('button', { name: /Examine details|Upload targets/i }).first()).toBeVisible();
 });
 
 test('Open Uploads button takes user to uploads tab', async ({ page }) => {
@@ -111,7 +111,7 @@ test('summary shows a clear 5-step checklist with one next action after upload',
   await expect(starter).toBeVisible();
   await expect(starter).toContainText('What to do next');
   await expect(starter).toContainText('Identify segments & metrics');
-  await expect(starter).toContainText('Set baselines');
+  await expect(starter).toContainText('Upload targets');
   await expect(starter).toContainText('Monitor checks');
   await expect(starter).toContainText('Review issues');
   await expect(starter).toContainText('Generate report');

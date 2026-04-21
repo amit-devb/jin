@@ -1499,7 +1499,7 @@
                 </div>
                 ${z(W,B&&!W)}
               </div>
-              <p>Open Monitor to run checks and view segment-level outcomes.</p>
+              <p>Open Monitor to set targets, run checks, and view segment-level outcomes.</p>
               <button class="action secondary tiny" style="margin-top:10px;" onclick="switchApiTab('history')">Open Monitor</button>
             </div>
             <div class="starter-step ${W&&A>0?"active-step":""}">

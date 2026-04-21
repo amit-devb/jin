@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test';
+import { Buffer } from 'buffer';
 
 const REVENUE_API = '/api/revenue/{retailer}';
 const REVENUE_API_ENCODED = encodeURIComponent(REVENUE_API);
+const TEST_DATE = '2026-03-19';
 
 function utf8Bytes(text: string): Uint8Array {
   // Minimal UTF-8 encoder so this spec does not require Node's Buffer types.
@@ -16,6 +18,7 @@ function buildMismatchCsv(): Uint8Array {
     'endpoint',
     'dimension_fields',
     'kpi_fields',
+    'grain_data[].date',
     'grain_data[].label',
     'grain_retailer',
     'expected_data[].revenue',
@@ -30,8 +33,9 @@ function buildMismatchCsv(): Uint8Array {
     rows.push(
       [
         `"/api/revenue/{retailer}"`,
-        `"data[].label,retailer"`,
+        `"data[].date,data[].label,retailer"`,
         `"data[].revenue,data[].orders"`,
+        TEST_DATE,
         'current',
         retailer,
         '1',
@@ -45,6 +49,10 @@ function buildMismatchCsv(): Uint8Array {
 }
 
 test('MVP acceptance: configure, upload mismatch, review issue, resolve', async ({ page }) => {
+  // Trigger Jin discovery/initialization via a non-/jin API request first.
+  const observe = await page.request.get('/api/revenue/walmart?dates=2026-03-19');
+  expect(observe.ok()).toBeTruthy();
+
   await page.goto(`/jin?y_view=api&y_api=${REVENUE_API_ENCODED}&y_tab=configuration`);
   await expect(page.locator('#api-title')).toContainText(REVENUE_API);
   await expect(page.locator('#po-mode-toggle')).not.toBeChecked();
@@ -74,8 +82,7 @@ test('MVP acceptance: configure, upload mismatch, review issue, resolve', async 
   await page.setInputFiles('#upload-file', {
     name: 'mvp-mismatch.csv',
     mimeType: 'text/csv',
-    // Playwright accepts a Node Buffer here, but Uint8Array works at runtime.
-    buffer: buildMismatchCsv() as any,
+    buffer: Buffer.from(buildMismatchCsv()),
   });
   await page.click('#preview-upload-button');
   await expect(page.locator('#upload-preview-step')).toBeVisible();
@@ -139,6 +146,14 @@ test('MVP acceptance: configure, upload mismatch, review issue, resolve', async 
   }, Number(selectedIssueId));
   await expect(page.locator('#confirm-modal')).toBeVisible();
   await page.locator('#confirm-accept').click({ force: true });
+
+  // The UI action is async (fetch inside the page). Ensure the backend sees the
+  // resolution before polling the active feed.
+  const resolveResponse = await page.request.post(`/jin/api/v2/anomaly/${selectedIssueId}/status`, {
+    data: { action: 'resolved' },
+  });
+  expect(resolveResponse.ok()).toBeTruthy();
+
   await expect
     .poll(
       async () => {

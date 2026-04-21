@@ -6718,8 +6718,10 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             try:
                 history = json.loads(call_native(issues_list, middleware.db_path, None, None))
                 for item in history:
+                    is_active_flag = bool(item.get("is_active", True))
+                    raw_status = str(item.get("status") or "active")
                     item["status"] = incident_status_for(
-                        str(item.get("status") or "active") != "resolved",
+                        is_active_flag and raw_status != "resolved",
                         str(item.get("incident_status") or item.get("status") or "active"),
                         item.get("snoozed_until"),
                         item.get("suppressed_until"),
@@ -6741,8 +6743,10 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
             try:
                 active = json.loads(call_native(get_active_anomalies, middleware.db_path)).get("anomalies", [])
                 for item in active:
+                    is_active_flag = bool(item.get("is_active", True))
+                    raw_status = str(item.get("status") or "active")
                     item["status"] = incident_status_for(
-                        True,
+                        is_active_flag and raw_status != "resolved",
                         str(item.get("incident_status") or item.get("status") or "active"),
                         item.get("snoozed_until"),
                         item.get("suppressed_until"),

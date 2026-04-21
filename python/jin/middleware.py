@@ -188,6 +188,18 @@ class JinMiddleware(BaseHTTPMiddleware):
             configured_queue_size = int(os.getenv("JIN_INGEST_QUEUE_SIZE", "2000"))
         except ValueError:
             configured_queue_size = 2000
+
+        # Mount the operator surface immediately so `/jin` works even if the first
+        # request a developer makes is to the dashboard itself (middleware excludes
+        # `/jin` to avoid recursion).
+        try:
+            if hasattr(app, "include_router") and not self._router_mounted:  # FastAPI app
+                app.include_router(create_router(self), prefix="/jin")
+                self._router_mounted = True
+        except Exception:
+            # If mounting fails (non-FastAPI app or import edge), we fall back to
+            # mounting during `_ensure_initialized()` on the first non-excluded request.
+            pass
         self.ingest_queue_size = max(configured_queue_size, 1)
         try:
             configured_ingest_workers = int(os.getenv("JIN_INGEST_WORKERS", "1"))

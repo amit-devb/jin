@@ -41,6 +41,6 @@ Then open:
 
 ## Notes
 
-- The demo stores state in `./demo-jin.duckdb`.
+- The demo stores state in `./.jin/demo-jin.duckdb`.
 - If auth is enabled in `.env`, the browser will prompt for the configured username and password before opening `/jin`.
 - This harness is for repository verification and maintainer onboarding only.

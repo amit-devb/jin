@@ -1,7 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import { Buffer } from 'buffer';
 
 const REVENUE_API = '/api/revenue/{retailer}';
 const REVENUE_API_ENCODED = encodeURIComponent(REVENUE_API);
+const TEST_DATE = '2026-03-19';
 
 function utf8Bytes(text: string): Uint8Array {
   // Minimal UTF-8 encoder so this spec does not require Node's Buffer types.
@@ -12,8 +14,8 @@ function utf8Bytes(text: string): Uint8Array {
 }
 
 function isoDateDaysAgo(daysAgo: number): string {
-  const value = new Date();
-  value.setDate(value.getDate() - daysAgo);
+  const value = new Date(`${TEST_DATE}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() - daysAgo);
   return value.toISOString().slice(0, 10);
 }
 
@@ -81,7 +83,7 @@ async function uploadLargeMismatchReference(page: Page): Promise<void> {
   await page.setInputFiles('#upload-file', {
     name: 'large-mismatch.csv',
     mimeType: 'text/csv',
-    buffer: buildLargeMismatchCsv() as any,
+    buffer: Buffer.from(buildLargeMismatchCsv()),
   });
   await page.click('#preview-upload-button');
   await expect(page.locator('#upload-preview-step')).toBeVisible();

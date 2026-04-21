@@ -4,6 +4,7 @@ import random
 from datetime import datetime, timedelta
 
 DB_PATH = "examples/fastapi_demo/app_data.duckdb"
+ANCHOR_DATE_ENV = "JIN_DEMO_ANCHOR_DATE"
 
 def seed_db():
     if os.path.exists(DB_PATH):
@@ -37,8 +38,15 @@ def seed_db():
     retailers = ["amazon", "shopify", "walmart", "target"]
     sku_groups = ["electronics", "apparel", "home", "outdoors"]
     
-    # Seed revenue (last 30 days)
-    now = datetime.now()
+    # Seed revenue/inventory around a stable anchor date so Playwright E2E tests
+    # can use fixed ISO dates regardless of when the demo is run.
+    #
+    # Default aligns with the E2E specs.
+    anchor = os.getenv(ANCHOR_DATE_ENV, "2026-03-19")
+    try:
+        now = datetime.fromisoformat(anchor)
+    except Exception:
+        now = datetime.now()
     for i in range(30):
         date_str = (now - timedelta(days=i)).strftime("%Y-%m-%d")
         for r in retailers:

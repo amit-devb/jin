@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { Buffer } from 'buffer';
 
 const REVENUE_API = '/api/revenue/{retailer}';
 const INVENTORY_API = '/api/inventory/{retailer}';
@@ -45,6 +46,7 @@ function buildRevenueMismatchCsv(samples: RevenueSample[]): Uint8Array {
       'endpoint',
       'dimension_fields',
       'kpi_fields',
+      'grain_data[].date',
       'grain_data[].label',
       'grain_retailer',
       'expected_data[].revenue',
@@ -56,8 +58,9 @@ function buildRevenueMismatchCsv(samples: RevenueSample[]): Uint8Array {
   samples.forEach((sample) => {
     rows.push([
       REVENUE_API,
-      'data[].label,retailer',
+      'data[].date,data[].label,retailer',
       'data[].revenue,data[].orders',
+      TEST_DATE,
       'current',
       sample.retailer,
       Number((sample.revenue * 0.2).toFixed(2)),
@@ -75,6 +78,7 @@ function buildInventoryMatchedCsv(sample: InventorySample): Uint8Array {
       'endpoint',
       'dimension_fields',
       'kpi_fields',
+      'grain_data[].snapshot_date',
       'grain_data[].label',
       'grain_data[].sku_group',
       'grain_retailer',
@@ -84,8 +88,9 @@ function buildInventoryMatchedCsv(sample: InventorySample): Uint8Array {
     ],
     [
       INVENTORY_API,
-      'data[].label,data[].sku_group,retailer',
+      'data[].snapshot_date,data[].label,data[].sku_group,retailer',
       'data[].in_stock,data[].sell_through',
+      TEST_DATE,
       'current',
       'all',
       sample.retailer,
@@ -183,7 +188,7 @@ async function uploadCsv(page: Page, filename: string, csvBuffer: Uint8Array): P
   await page.setInputFiles('#upload-file', {
     name: filename,
     mimeType: 'text/csv',
-    buffer: csvBuffer as any,
+    buffer: Buffer.from(csvBuffer),
   });
   await page.click('#preview-upload-button');
   await expect(page.locator('#upload-preview-step')).toBeVisible();
