@@ -1831,7 +1831,20 @@ class JinMiddleware(BaseHTTPMiddleware):
             return
         if init_db is not None:
             try:
-                init_db(self.db_path)
+                attempts = 0
+                while True:
+                    try:
+                        init_db(self.db_path)
+                        break
+                    except Exception as exc:
+                        attempts += 1
+                        if platform.system().lower() == "windows" and self._is_duckdb_lock_error(exc) and attempts < 10:
+                            # Uvicorn reload/workers can briefly overlap processes on Windows, which makes
+                            # DuckDB refuse to open the file. Retry for a short window so the operator
+                            # dashboard doesn't flap on reload.
+                            time.sleep(min(0.05 * (2 ** (attempts - 1)), 0.5))
+                            continue
+                        raise
                 if self._test_conn is not None:
                     try:
                         self._test_conn.close()
@@ -2071,8 +2084,21 @@ class JinMiddleware(BaseHTTPMiddleware):
             import duckdb as py_duckdb
         except ImportError:
             return None, self.db_lock()
+        attempts = 0
+        while True:
+            try:
+                conn = py_duckdb.connect(self.db_path)
+                break
+            except Exception as exc:
+                if self._is_duckdb_internal_error(exc):
+                    self._quarantine_corrupt_db(exc)
+                    continue
+                attempts += 1
+                if windows_ephemeral_duckdb_connections() and self._is_duckdb_lock_error(exc) and attempts < 10:
+                    time.sleep(min(0.05 * (2 ** (attempts - 1)), 0.5))
+                    continue
+                raise
         try:
-            conn = py_duckdb.connect(self.db_path)
             if windows_ephemeral_duckdb_connections():
                 return conn, _scoped_lock_and_close(conn)
             self._test_conn = conn
@@ -2098,6 +2124,19 @@ class JinMiddleware(BaseHTTPMiddleware):
             "assertion failure",
             "failed to load metadata pointer",
             "dict_offset",
+        )
+        return any(marker in text for marker in markers)
+
+    def _is_duckdb_lock_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        markers = (
+            "file already open",
+            "already open",
+            "already in use",
+            "used by another process",
+            "cannot open file",
+            "io error: cannot open file",
+            "permission denied",
         )
         return any(marker in text for marker in markers)
 

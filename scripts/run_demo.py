@@ -2,8 +2,19 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import socket
 import sys
 from pathlib import Path
+
+
+def can_bind(host: str, port: int) -> tuple[bool, str | None]:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+        return True, None
+    except OSError as exc:
+        return False, str(exc)
 
 
 def main() -> int:
@@ -29,14 +40,23 @@ def main() -> int:
     os.environ.setdefault("JIN_DISABLE_NATIVE_CONFIG_LOAD", "1")
     spec.loader.exec_module(module)
 
-    demo_db_prefix = Path(__file__).resolve().parents[1] / "demo-jin.duckdb"
-    # print("Resetting demo state before launch.")
-    # for candidate in demo_db_prefix.parent.glob(demo_db_prefix.name + "*"):
-    #     if candidate.is_file() or candidate.is_symlink():
-    #         candidate.unlink(missing_ok=True)
+    host = os.getenv("JIN_DEMO_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int(os.getenv("JIN_DEMO_PORT", "8080"))
+    except ValueError:
+        port = 8080
 
-    print("Starting internal maintainer demo harness at http://127.0.0.1:8080/jin")
-    uvicorn.run(module.app, host="127.0.0.1", port=8080, reload=False)
+    ok, error = can_bind(host, port)
+    if not ok:
+        print(
+            f"Unable to bind the demo server on {host}:{port}: {error}\n"
+            "Try a different port via `JIN_DEMO_PORT=8000 make demo-run`, or stop the process using that port.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Starting internal maintainer demo harness at http://{host}:{port}/jin")
+    uvicorn.run(module.app, host=host, port=port, reload=False)
     return 0
 
 

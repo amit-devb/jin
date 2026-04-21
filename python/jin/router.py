@@ -400,7 +400,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 "router.connection",
                 "Jin storage is temporarily unavailable.",
                 detail=str(exc),
-                hint="DuckDB may be corrupted or locked. Restart Jin and retry.",
+                hint="DuckDB may be corrupted or locked. On Windows, ensure only one server process uses this DB (disable --reload overlap, run with --workers 1), then restart Jin and retry.",
                 level="error",
             )
             raise HTTPException(

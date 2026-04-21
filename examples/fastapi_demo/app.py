@@ -9,7 +9,6 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from jin import JinMiddleware
-from jin.router import create_router
 from jin.watch import watch
 
 
@@ -30,7 +29,12 @@ def load_local_env() -> None:
 
 
 load_local_env()
-os.environ["JIN_DB_PATH"] = "./demo-jin.duckdb"
+
+# Demo defaults. Real apps can either:
+# - pass `db_path=` to `JinMiddleware`, or
+# - set `JIN_DB_PATH` in the environment (which overrides the argument).
+DEMO_DB_PATH = str(Path(".jin") / "demo-jin.duckdb")
+os.environ.setdefault("JIN_DB_PATH", DEMO_DB_PATH)
 os.environ.setdefault("JIN_DISABLE_NATIVE_CONFIG_LOAD", "1")
 APP_DB_PATH = Path(__file__).parent / "app_data.duckdb"
 
@@ -73,21 +77,13 @@ class WatchPayload(BaseModel):
 
 app = FastAPI(title="Jin Demo")
 
-# Initialize Jin and explicitly mount the router for the demo
-jin = JinMiddleware(app, db_path="./demo-jin.duckdb", global_threshold=10.0)
-app.include_router(create_router(jin), prefix="/jin")
-
-app.add_middleware(JinMiddleware, db_path="./demo-jin.duckdb", global_threshold=10.0)
-
-
-@app.on_event("startup")
-async def startup_event():
-    # Force discovery on the shared instance to populate the dashboard immediately
-    jin._init_db_if_needed()
-    jin._discover_routes(app)
-    # Ensure scheduler is started and jobs are registered for the demo instance
-    jin._register_scheduler_jobs()
-    jin.scheduler.start()
+# Standard integration: add the middleware once.
+#
+# The Jin middleware mounts the `/jin` router lazily on first request (and performs
+# discovery + scheduler boot). Do not also create a separate JinMiddleware instance
+# and mount its router manually, as that can double-open the DuckDB file and cause
+# "file already open" errors on Windows.
+app.add_middleware(JinMiddleware, db_path=DEMO_DB_PATH, global_threshold=10.0)
 
 
 @app.get("/", include_in_schema=False)
