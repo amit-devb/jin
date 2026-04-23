@@ -1486,6 +1486,79 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                 except Exception:
                     pass
 
+    def _persist_config_shadow_row(endpoint_path: str, payload: dict[str, Any]) -> None:
+        """Persist a Python DuckDB shadow of the v2 config.
+
+        This is intentionally redundant with the native config store: it keeps the
+        Python fallback path functional when native config loading fails (e.g. due
+        to native/WAL replay issues), and it also serves tests that validate the
+        "restart then load saved config" UX.
+        """
+        if duckdb is None:  # pragma: no cover
+            return
+        middleware._ensure_python_schema()
+        with middleware.db_lock():
+            with duckdb.connect(middleware.db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS jin_config (
+                        endpoint_path VARCHAR PRIMARY KEY,
+                        dimension_overrides VARCHAR,
+                        kpi_overrides VARCHAR,
+                        tolerance_relaxed DOUBLE DEFAULT 20.0,
+                        tolerance_normal DOUBLE DEFAULT 10.0,
+                        tolerance_strict DOUBLE DEFAULT 5.0,
+                        active_tolerance VARCHAR DEFAULT 'normal',
+                        tolerance_pct DOUBLE DEFAULT 10.0,
+                        confirmed BOOLEAN DEFAULT false,
+                        rows_path VARCHAR,
+                        time_end_field VARCHAR,
+                        time_profile VARCHAR DEFAULT 'auto',
+                        time_extraction_rule VARCHAR DEFAULT 'single',
+                        time_format VARCHAR,
+                        time_field VARCHAR,
+                        time_granularity VARCHAR DEFAULT 'minute',
+                        time_pin INTEGER DEFAULT 0,
+                        updated_at TIMESTAMP DEFAULT now()
+                    )
+                    """
+                )
+                _ensure_config_mapping_columns(conn)
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO jin_config (
+                        endpoint_path, dimension_overrides, kpi_overrides,
+                        tolerance_relaxed, tolerance_normal, tolerance_strict, active_tolerance,
+                        tolerance_pct, confirmed, time_field, time_granularity,
+                        rows_path, time_end_field, time_profile, time_extraction_rule, time_format, time_pin,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+                    """,
+                    [
+                        endpoint_path,
+                        json.dumps(payload.get("dimension_fields", [])),
+                        json.dumps(payload.get("kpi_fields", [])),
+                        payload.get("tolerance_relaxed", 20.0),
+                        payload.get("tolerance_normal", payload.get("tolerance_pct", 10.0)),
+                        payload.get("tolerance_strict", 5.0),
+                        payload.get("active_tolerance", "normal"),
+                        payload.get("tolerance_pct", 10.0),
+                        bool(payload.get("confirmed", True)),
+                        payload.get("time_field"),
+                        payload.get("time_granularity", "minute"),
+                        payload.get("rows_path"),
+                        payload.get("time_end_field"),
+                        payload.get("time_profile", "auto"),
+                        payload.get("time_extraction_rule", "single"),
+                        payload.get("time_format"),
+                        1 if payload.get("time_pin", False) else 0,
+                    ],
+                )
+                try:
+                    conn.execute("CHECKPOINT")
+                except Exception:
+                    pass
+
     def _is_v2_api_request(request: Request | None) -> bool:
         if request is None:
             return False
@@ -4752,6 +4825,7 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
                     )
                 )
                 try:
+                    _persist_config_shadow_row(endpoint_path, payload)
                     _persist_config_mapping_overrides(endpoint_path, payload)
                 except Exception as exc:
                     record_router_error(
