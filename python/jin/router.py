@@ -6056,7 +6056,6 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
 
         if import_reference_rows is not None:
             try:
-                _clear_endpoint_references(endpoint_path)
                 payload = json.loads(
                     call_native(
                         import_reference_rows,
@@ -6404,7 +6403,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/v2/upload/{path:path}")
     async def upload_reference(path: str, file: UploadFile = File(...), request: Request = None) -> JSONResponse:
         require_auth(request, api=True)
-        require_duckdb()
+        if import_reference_rows is None:
+            require_duckdb()
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         blocked = _require_v2_setup_ready(endpoint_path, request, action_text="uploading a baseline file")
         if blocked is not None:
@@ -6447,7 +6447,8 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/v2/upload-async/{path:path}")
     async def upload_reference_async(path: str, file: UploadFile = File(...), request: Request = None) -> JSONResponse:
         require_auth(request, api=True)
-        require_duckdb()
+        if import_reference_rows is None:
+            require_duckdb()
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         blocked = _require_v2_setup_ready(endpoint_path, request, action_text="starting baseline upload")
         if blocked is not None:

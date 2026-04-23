@@ -205,6 +205,7 @@ fn reconciliation_reason(
 pub fn init_db(db_path: &str) -> Result<(), String> {
     with_connection(db_path, |conn| {
         init_schema(conn).map_err(|err| err.to_string())?;
+        checkpoint(conn).map_err(|err| err.to_string())?;
         Ok(())
     })
 }
@@ -520,6 +521,7 @@ fn process_observation_value(
 pub fn get_status(db_path: &str) -> Result<String, String> {
     with_connection(db_path, |conn| {
         init_schema(conn).map_err(|err| err.to_string())?;
+        checkpoint(conn).map_err(|err| err.to_string())?;
         status_payload(conn)
     })
 }
@@ -625,6 +627,7 @@ pub fn get_endpoint_detail_with_limits(
 ) -> Result<String, String> {
     with_connection(db_path, |conn| {
         init_schema(conn).map_err(|err| err.to_string())?;
+        checkpoint(conn).map_err(|err| err.to_string())?;
         endpoint_detail_payload_with_limits(conn, endpoint_path, history_limit, reference_limit)
     })
 }
@@ -632,6 +635,7 @@ pub fn get_endpoint_detail_with_limits(
 pub fn get_active_anomalies(db_path: &str) -> Result<String, String> {
     with_connection(db_path, |conn| {
         init_schema(conn).map_err(|err| err.to_string())?;
+        checkpoint(conn).map_err(|err| err.to_string())?;
         active_anomalies_payload(conn)
     })
 }
@@ -683,6 +687,7 @@ pub fn save_endpoint_config_json(
 ) -> Result<String, String> {
     with_connection(db_path, |conn| {
         init_schema(conn).map_err(|err| err.to_string())?;
+        checkpoint(conn).map_err(|err| err.to_string())?;
         let default_dimension_fields: Vec<String> =
             serde_json::from_str(default_dimension_fields_json).map_err(|err| err.to_string())?;
         let default_kpi_fields: Vec<String> =
@@ -751,6 +756,7 @@ pub fn load_saved_endpoint_config_json(
 ) -> Result<String, String> {
     with_connection(db_path, |conn| {
         init_schema(conn).map_err(|err| err.to_string())?;
+        checkpoint(conn).map_err(|err| err.to_string())?;
         storage::load_saved_endpoint_config(conn, endpoint_path)
     })
 }
