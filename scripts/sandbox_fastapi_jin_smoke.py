@@ -56,6 +56,7 @@ def sales() -> list[dict[str, object]]:
         os.environ["JIN_PROJECT_NAME"] = "sandbox-smoke"
         os.environ["JIN_DB_PATH"] = str(db_path)
         os.environ["JIN_AUTH_ENABLED"] = "0"
+        os.environ["JIN_DISABLE_SCHEDULER"] = "1"
 
         from fastapi import FastAPI
         from fastapi.testclient import TestClient

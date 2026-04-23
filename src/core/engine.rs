@@ -24,7 +24,28 @@ fn with_connection<T, F>(db_path: &str, op: F) -> Result<T, String>
 where
     F: FnOnce(&Connection) -> Result<T, String>,
 {
-    let conn = Connection::open(db_path).map_err(|err| err.to_string())?;
+    let wal_path = format!("{db_path}.wal");
+    if std::env::var("JIN_NATIVE_WAL_RECOVERY")
+        .ok()
+        .map(|value| value.to_lowercase())
+        .as_deref()
+        == Some("delete")
+    {
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    let conn = match Connection::open(db_path) {
+        Ok(conn) => conn,
+        Err(err) => {
+            let message = err.to_string();
+            if message.contains("Failure while replaying WAL file") {
+                let _ = std::fs::remove_file(&wal_path);
+                Connection::open(db_path).map_err(|err| err.to_string())?
+            } else {
+                return Err(message);
+            }
+        }
+    };
     op(&conn)
 }
 

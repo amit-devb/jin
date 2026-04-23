@@ -146,6 +146,12 @@ class JinMiddleware(BaseHTTPMiddleware):
         self._native_db_lock = RLock()
         self._router_mounted = False
         self._initialized = False
+        self.scheduler_enabled = os.getenv("JIN_DISABLE_SCHEDULER", "").lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self._middleware_created_perf = time.perf_counter()
         self._startup_completed_perf: float | None = None
         self.scheduler = JinScheduler(retry_backoff_seconds=300, retry_backoff_cap_seconds=3600)
@@ -2486,7 +2492,8 @@ class JinMiddleware(BaseHTTPMiddleware):
             self._router_mounted = True
         self._register_scheduler_jobs()
         self._ensure_ingestion_workers()
-        self.scheduler.start()
+        if self.scheduler_enabled:
+            self.scheduler.start()
         self._initialized = True
         if self._startup_completed_perf is None:
             self._startup_completed_perf = time.perf_counter()
