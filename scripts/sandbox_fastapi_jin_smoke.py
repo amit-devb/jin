@@ -9,6 +9,7 @@ from pathlib import Path
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv or sys.argv[1:])
+    smoke_mode = str(os.getenv("JIN_SMOKE_MODE", "user")).strip().lower()
     with tempfile.TemporaryDirectory(prefix="jin-fastapi-smoke-") as tmp:
         root = Path(tmp)
         db_path = root / ".jin" / "jin.duckdb"
@@ -56,7 +57,9 @@ def sales() -> list[dict[str, object]]:
         os.environ["JIN_PROJECT_NAME"] = "sandbox-smoke"
         os.environ["JIN_DB_PATH"] = str(db_path)
         os.environ["JIN_AUTH_ENABLED"] = "0"
-        os.environ["JIN_DISABLE_SCHEDULER"] = "1"
+        # CI runs can disable scheduler/background activity for determinism.
+        if smoke_mode in {"ci", "github", "gha"}:
+            os.environ["JIN_DISABLE_SCHEDULER"] = "1"
 
         from fastapi import FastAPI
         from fastapi.testclient import TestClient

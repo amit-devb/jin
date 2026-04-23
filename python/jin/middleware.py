@@ -111,10 +111,21 @@ class JinMiddleware(BaseHTTPMiddleware):
     ) -> None:
         super().__init__(app)
         self.db_path = os.getenv("JIN_DB_PATH", db_path)
+        configured_py_db_path = str(os.getenv("JIN_PY_DB_PATH", "")).strip()
+        if configured_py_db_path:
+            self.py_db_path = configured_py_db_path
+        else:
+            self.py_db_path = self.db_path
         try:
             db_parent = Path(self.db_path).expanduser().parent
             if str(db_parent) and str(db_parent) != ".":
                 db_parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            py_parent = Path(self.py_db_path).expanduser().parent
+            if str(py_parent) and str(py_parent) != ".":
+                py_parent.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
         self.global_threshold = global_threshold
@@ -1890,7 +1901,7 @@ class JinMiddleware(BaseHTTPMiddleware):
             return
         try:
             with self.db_lock():
-                conn = py_duckdb.connect(self.db_path)
+                conn = py_duckdb.connect(self.py_db_path)
                 try:
                     # Core tables used by the reconciliation-first operator surface.
                     conn.execute(
@@ -2017,7 +2028,7 @@ class JinMiddleware(BaseHTTPMiddleware):
                     conn.close()
             self._initialized = True
         except Exception as e:  # pragma: no cover
-            self.logger.error("Python fallback schema init failed for %s: %s", self.db_path, e)
+            self.logger.error("Python fallback schema init failed for %s: %s", self.py_db_path, e)
             return
 
     @contextmanager
@@ -2105,7 +2116,7 @@ class JinMiddleware(BaseHTTPMiddleware):
         attempts = 0
         while True:
             try:
-                conn = py_duckdb.connect(self.db_path)
+                conn = py_duckdb.connect(self.py_db_path)
                 break
             except Exception as exc:
                 if self._is_duckdb_internal_error(exc):
@@ -2124,7 +2135,7 @@ class JinMiddleware(BaseHTTPMiddleware):
         except Exception as exc:
             if self._is_duckdb_internal_error(exc):
                 self._quarantine_corrupt_db(exc)
-                conn = py_duckdb.connect(self.db_path)
+                conn = py_duckdb.connect(self.py_db_path)
                 if windows_ephemeral_duckdb_connections():
                     return conn, _scoped_lock_and_close(conn)
                 self._test_conn = conn

@@ -11,9 +11,7 @@ permissions:
 
 env:
   PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-  # Mitigation for rare DuckDB WAL replay internal errors on CI runners.
-  # Keeps CI smoke deterministic without changing default production behavior.
-  JIN_NATIVE_WAL_RECOVERY: "delete"
+  JIN_SMOKE_MODE: "ci"
 
 jobs:
   linux-smoke:
