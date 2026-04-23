@@ -22,7 +22,7 @@ static OBSERVATION_CHECKPOINT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn with_connection<T, F>(db_path: &str, op: F) -> Result<T, String>
 where
-    F: FnOnce(&Connection) -> Result<T, String>,
+    F: Fn(&Connection) -> Result<T, String>,
 {
     let wal_path = format!("{db_path}.wal");
     if std::env::var("JIN_NATIVE_WAL_RECOVERY")
@@ -34,19 +34,32 @@ where
         let _ = std::fs::remove_file(&wal_path);
     }
 
-    let conn = match Connection::open(db_path) {
+    let open_connection = || Connection::open(db_path).map_err(|err| err.to_string());
+
+    let conn = match open_connection() {
         Ok(conn) => conn,
         Err(err) => {
-            let message = err.to_string();
+            let message = err;
             if message.contains("Failure while replaying WAL file") {
                 let _ = std::fs::remove_file(&wal_path);
-                Connection::open(db_path).map_err(|err| err.to_string())?
+                open_connection()?
             } else {
                 return Err(message);
             }
         }
     };
-    op(&conn)
+    match op(&conn) {
+        Ok(value) => Ok(value),
+        Err(message) => {
+            if message.contains("Failure while replaying WAL file") {
+                let _ = std::fs::remove_file(&wal_path);
+                let conn = open_connection()?;
+                op(&conn)
+            } else {
+                Err(message)
+            }
+        }
+    }
 }
 
 fn observation_checkpoint_every() -> u64 {
