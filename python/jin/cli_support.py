@@ -137,6 +137,38 @@ def env_project_name(cli_value: str | None = None) -> str:
     return cli_value or os.getenv("JIN_PROJECT_NAME", Path.cwd().name or "jin-project")
 
 
+def ensure_project_root_cwd() -> None:
+    """Fail fast when CLI is executed from a subdirectory.
+
+    Jin stores project-local state (like `.env` and `./.jin/jin.duckdb`) relative to the
+    current working directory. Running from a nested folder commonly leads to confusing
+    setup drift (multiple `.jin` dirs, missing DB warnings, etc.).
+    """
+    cwd = Path.cwd().resolve()
+    markers = (
+        "pyproject.toml",
+        "uv.lock",
+        "poetry.lock",
+        "requirements.txt",
+        "setup.py",
+        ".git",
+    )
+    if any((cwd / marker).exists() for marker in markers):
+        return
+    for parent in cwd.parents:
+        if any((parent / marker).exists() for marker in markers):
+            raise RuntimeError(
+                "Run Jin from your project root.\n"
+                f"Detected project markers at: {parent}\n"
+                f"Current directory is: {cwd}\n"
+                f"Fix: cd {parent} && jin init"
+            )
+    raise RuntimeError(
+        "Run Jin from your project root.\n"
+        f"Current directory is: {cwd}\n"
+        "Fix: cd to the folder containing your `pyproject.toml` (or `.git`) and retry."
+    )
+
 def native_env_payload() -> str:
     keys = [
         "JIN_AUTH_ENABLED",
@@ -831,6 +863,7 @@ def command_init_check(args: argparse.Namespace) -> int:
 def command_init(args: argparse.Namespace) -> int:
     if bool(getattr(args, "check", False)):
         return command_init_check(args)
+    ensure_project_root_cwd()
     interactive = bool(getattr(args, "interactive", False))
     project_name = env_project_name(args.project_name)
     db_path = env_db_path(args.db_path)
@@ -904,6 +937,7 @@ def command_quickstart(args: argparse.Namespace) -> int:
 
 
 def command_setup(args: argparse.Namespace) -> int:
+    ensure_project_root_cwd()
     module_path = getattr(args, "app_file", None) or discover_module_path()
     app_var = getattr(args, "app_var", None)
     db_path = env_db_path(getattr(args, "db_path", None))

@@ -207,6 +207,7 @@ def test_cli_patch_fastapi_supports_factory_layout(tmp_path: Path, monkeypatch, 
 
 
 def test_cli_setup_runs_patch_init_and_auth(tmp_path: Path, monkeypatch, capsys) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.0.0'\n")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     target = app_dir / "main.py"
@@ -243,6 +244,7 @@ def test_cli_setup_runs_patch_init_and_auth(tmp_path: Path, monkeypatch, capsys)
 
 
 def test_cli_setup_auto_discovers_main_module(tmp_path: Path, monkeypatch, capsys) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.0.0'\n")
     target = tmp_path / "main.py"
     target.write_text("from fastapi import FastAPI\n\napp = FastAPI()\n")
     monkeypatch.chdir(tmp_path)
@@ -255,6 +257,9 @@ def test_cli_setup_auto_discovers_main_module(tmp_path: Path, monkeypatch, capsy
 
 
 def test_cli_init_writes_env_file(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.0.0'\n")
+    import os
+    os.chdir(tmp_path)
     env_path = tmp_path / ".env"
     exit_code = main(["init", "--write", "--env-file", str(env_path), "--project-name", "demo-cli"])
     assert exit_code == 0
@@ -265,6 +270,8 @@ def test_cli_init_writes_env_file(tmp_path: Path) -> None:
 
 
 def test_cli_init_interactive_writes_env_file(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.0.0'\n")
+    monkeypatch.chdir(tmp_path)
     env_path = tmp_path / ".env"
     answers = iter(["interactive-demo", "./interactive.duckdb", "", "y", "y"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
@@ -277,6 +284,8 @@ def test_cli_init_interactive_writes_env_file(tmp_path: Path, monkeypatch) -> No
 
 
 def test_cli_init_with_app_seeds_db(tmp_path: Path, monkeypatch, capsys) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.0.0'\n")
+    monkeypatch.chdir(tmp_path)
     app_path = write_demo_module(tmp_path, monkeypatch)
     env_path = tmp_path / ".env"
     db_path = tmp_path / "seeded.duckdb"
@@ -309,6 +318,9 @@ def test_cli_init_with_app_seeds_db(tmp_path: Path, monkeypatch, capsys) -> None
 
 
 def test_cli_init_with_invalid_app_prints_helpful_error(tmp_path: Path, capsys) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.0.0'\n")
+    import os
+    os.chdir(tmp_path)
     env_path = tmp_path / ".env"
     exit_code = main(
         [
@@ -328,6 +340,9 @@ def test_cli_init_with_invalid_app_prints_helpful_error(tmp_path: Path, capsys) 
 
 
 def test_cli_init_check_with_invalid_app_prints_guidance_not_error(tmp_path: Path, capsys) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.0.0'\n")
+    import os
+    os.chdir(tmp_path)
     env_path = tmp_path / ".env"
     exit_code = main(
         [
@@ -375,6 +390,8 @@ def test_cli_init_check_auto_detects_app_and_guides_mounting(tmp_path: Path, mon
 
 
 def test_cli_init_serve_check_warns_when_jin_not_mounted(tmp_path: Path, monkeypatch, capsys) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.0.0'\n")
+    monkeypatch.chdir(tmp_path)
     app_path = write_demo_module(tmp_path, monkeypatch)
     db_path = tmp_path / "serve-check.duckdb"
     exit_code = main(["init", "--db-path", str(db_path), "--app", app_path, "--serve-check"])
@@ -385,6 +402,8 @@ def test_cli_init_serve_check_warns_when_jin_not_mounted(tmp_path: Path, monkeyp
 
 
 def test_cli_init_serve_check_confirms_when_jin_mounted(tmp_path: Path, monkeypatch, capsys) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.0.0'\n")
+    monkeypatch.chdir(tmp_path)
     app_path = write_demo_module_with_jin(tmp_path, monkeypatch)
     db_path = tmp_path / "serve-check-ok.duckdb"
     exit_code = main(["init", "--db-path", str(db_path), "--app", app_path, "--serve-check"])
