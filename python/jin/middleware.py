@@ -3004,7 +3004,12 @@ class JinMiddleware(BaseHTTPMiddleware):
         if native_config_enabled:
             try:
                 payload = json.loads(load_saved_endpoint_config(self.db_path, endpoint_path))
-                if payload:
+                if not payload:
+                    # Treat "no row" (or a native layer returning `{}`) as a signal to try
+                    # the Python fallback store. This keeps config loading resilient when
+                    # native persistence is degraded but the shadow row exists.
+                    native_failed = True
+                else:
                     merged.update({
                         "dimension_fields": payload.get("dimension_fields"),
                         "kpi_fields": payload.get("kpi_fields"),
