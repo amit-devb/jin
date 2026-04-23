@@ -106,6 +106,5 @@ jobs:
       - name: Install project (native extension)
         run: python -m pip install -e ".[dev]"
 
-      - name: Run sandbox smoke (PowerShell)
-        shell: pwsh
-        run: .\scripts\prepush_sandbox_smoke.ps1
+      - name: Run sandbox smoke
+        run: python scripts/sandbox_fastapi_jin_smoke.py

@@ -45,6 +45,15 @@ def _post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {"raw": parsed}
 
 
+def _get_json(url: str) -> dict[str, object]:
+    import httpx
+
+    response = httpx.get(url, timeout=15.0)
+    response.raise_for_status()
+    parsed = response.json()
+    return parsed if isinstance(parsed, dict) else {"raw": parsed}
+
+
 def _post_multipart(url: str, *, file_path: Path) -> dict[str, object]:
     import httpx
 
@@ -136,7 +145,7 @@ def sales() -> list[dict[str, object]]:
             _wait_for_http_ok(f"{base}/openapi.json")
 
             # 1) Ensure Jin mounted and native backend reachable.
-            status = _post_json(f"{base}/jin/api/v2/status", {})
+            status = _get_json(f"{base}/jin/api/v2/status")
             project = status.get("project") if isinstance(status, dict) else None
             if not isinstance(project, dict):
                 raise RuntimeError(f"Unexpected status payload: {json.dumps(status)[:400]}")
@@ -193,4 +202,3 @@ def sales() -> list[dict[str, object]]:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
