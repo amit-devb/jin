@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import duckdb
 import jin.middleware as middleware_module
 from jin.core.license import LicensePolicy
 from jin.middleware import EndpointRecord, JinMiddleware
@@ -331,6 +332,47 @@ def test_override_and_processed_item_branches(app, tmp_path: Path, monkeypatch: 
     loaded = middleware._load_overrides(endpoint_path)
     assert loaded["confirmed"] is True
     assert loaded["active_tolerance"] == "normal"
+
+    # If native config loading returns an empty payload (e.g. missing row or degraded native store),
+    # Jin should fall back to the Python DuckDB config row when present.
+    monkeypatch.setattr(middleware_module, "load_saved_endpoint_config", lambda *_args, **_kwargs: "{}")
+    with middleware.db_lock():
+        with duckdb.connect(middleware.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jin_config (
+                    endpoint_path VARCHAR PRIMARY KEY,
+                    dimension_overrides VARCHAR,
+                    kpi_overrides VARCHAR,
+                    tolerance_pct DOUBLE DEFAULT 10.0,
+                    confirmed BOOLEAN DEFAULT false,
+                    time_field VARCHAR,
+                    time_granularity VARCHAR DEFAULT 'minute',
+                    updated_at TIMESTAMP DEFAULT now()
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO jin_config (
+                    endpoint_path, dimension_overrides, kpi_overrides, tolerance_pct, confirmed, time_field, time_granularity, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, now())
+                """,
+                [
+                    endpoint_path,
+                    json.dumps(["retailer"]),
+                    json.dumps(["data.RSV"]),
+                    12.0,
+                    True,
+                    "period",
+                    "week",
+                ],
+            )
+    loaded = middleware._load_overrides(endpoint_path)
+    assert loaded["dimension_fields"] == ["retailer"]
+    assert loaded["kpi_fields"] == ["data.RSV"]
+    assert loaded["confirmed"] is True
+    assert loaded["time_field"] == "period"
 
     record = EndpointRecord(
         method="GET",
