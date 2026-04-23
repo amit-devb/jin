@@ -2981,7 +2981,9 @@ class JinMiddleware(BaseHTTPMiddleware):
         if endpoint_path in self.override_state:
             return self.override_state[endpoint_path]
         merged: dict[str, Any] = {}
-        if load_saved_endpoint_config is not None and not self._native_config_loading_disabled():
+        native_config_enabled = load_saved_endpoint_config is not None and not self._native_config_loading_disabled()
+        native_failed = False
+        if native_config_enabled:
             try:
                 payload = json.loads(load_saved_endpoint_config(self.db_path, endpoint_path))
                 if payload:
@@ -3008,102 +3010,106 @@ class JinMiddleware(BaseHTTPMiddleware):
                     detail=str(exc),
                     level="warning",
                 )
-        try:
-            conn, lock = self._get_connection()
-            with lock:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS jin_config (
-                        endpoint_path VARCHAR PRIMARY KEY,
-                        dimension_overrides VARCHAR,
-                        kpi_overrides VARCHAR,
-                        tolerance_relaxed DOUBLE DEFAULT 20.0,
-                        tolerance_normal DOUBLE DEFAULT 10.0,
-                        tolerance_strict DOUBLE DEFAULT 5.0,
-                        active_tolerance VARCHAR DEFAULT 'normal',
-                        tolerance_pct DOUBLE DEFAULT 10.0,
-                        confirmed BOOLEAN DEFAULT false,
-                        rows_path VARCHAR,
-                        time_end_field VARCHAR,
-                        time_profile VARCHAR DEFAULT 'auto',
-                        time_extraction_rule VARCHAR DEFAULT 'single',
-                        time_format VARCHAR,
-                        time_field VARCHAR,
-                        time_granularity VARCHAR DEFAULT 'minute',
-                        time_pin INTEGER DEFAULT 0,
-                        updated_at TIMESTAMP DEFAULT now()
+                native_failed = True
+        if not native_config_enabled or native_failed:
+            try:
+                conn, lock = self._get_connection()
+                with lock:
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS jin_config (
+                            endpoint_path VARCHAR PRIMARY KEY,
+                            dimension_overrides VARCHAR,
+                            kpi_overrides VARCHAR,
+                            tolerance_relaxed DOUBLE DEFAULT 20.0,
+                            tolerance_normal DOUBLE DEFAULT 10.0,
+                            tolerance_strict DOUBLE DEFAULT 5.0,
+                            active_tolerance VARCHAR DEFAULT 'normal',
+                            tolerance_pct DOUBLE DEFAULT 10.0,
+                            confirmed BOOLEAN DEFAULT false,
+                            rows_path VARCHAR,
+                            time_end_field VARCHAR,
+                            time_profile VARCHAR DEFAULT 'auto',
+                            time_extraction_rule VARCHAR DEFAULT 'single',
+                            time_format VARCHAR,
+                            time_field VARCHAR,
+                            time_granularity VARCHAR DEFAULT 'minute',
+                            time_pin INTEGER DEFAULT 0,
+                            updated_at TIMESTAMP DEFAULT now()
+                        )
+                        """
                     )
-                    """
-                )
-                conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS rows_path VARCHAR")
-                conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_end_field VARCHAR")
-                conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_profile VARCHAR DEFAULT 'auto'")
-                conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_extraction_rule VARCHAR DEFAULT 'single'")
-                conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_format VARCHAR")
-                conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_pin INTEGER DEFAULT 0")
-                row = conn.execute(
-                    """
-                    SELECT
-                        dimension_overrides,
-                        kpi_overrides,
-                        tolerance_pct,
-                        confirmed,
-                        tolerance_relaxed,
-                        tolerance_normal,
-                        tolerance_strict,
-                        active_tolerance,
-                        time_field,
-                        time_granularity,
-                        rows_path,
-                        time_end_field,
-                        time_profile,
-                        time_extraction_rule,
-                        time_format,
-                        time_pin
-                    FROM jin_config
-                    WHERE endpoint_path = ?
-                    """,
-                    [endpoint_path],
-                ).fetchone()
-            if row:
-                if merged.get("dimension_fields") is None and row[0]:
-                    try:
-                        merged["dimension_fields"] = json.loads(row[0])
-                    except Exception:
-                        pass
-                if merged.get("kpi_fields") is None and row[1]:
-                    try:
-                        merged["kpi_fields"] = json.loads(row[1])
-                    except Exception:
-                        pass
-                if merged.get("tolerance_pct") is None and row[2] is not None:
-                    merged["tolerance_pct"] = float(row[2])
-                if merged.get("confirmed") is None and row[3] is not None:
-                    merged["confirmed"] = bool(row[3])
-                if merged.get("tolerance_relaxed") is None and row[4] is not None:
-                    merged["tolerance_relaxed"] = float(row[4])
-                if merged.get("tolerance_normal") is None and row[5] is not None:
-                    merged["tolerance_normal"] = float(row[5])
-                if merged.get("tolerance_strict") is None and row[6] is not None:
-                    merged["tolerance_strict"] = float(row[6])
-                if merged.get("active_tolerance") is None and row[7]:
-                    merged["active_tolerance"] = row[7]
-                if merged.get("time_field") is None and row[8]:
-                    merged["time_field"] = row[8]
-                if merged.get("time_granularity") is None and row[9]:
-                    merged["time_granularity"] = row[9]
-                merged.update(
-                    {
-                        "rows_path": row[10],
-                        "time_end_field": row[11],
-                        "time_profile": row[12] or "auto",
-                        "time_extraction_rule": row[13] or "single",
-                        "time_format": row[14],
-                        "time_pin": bool(row[15]) if row[15] is not None else False,
-                    }
-                )
-        except Exception:
-            pass
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS rows_path VARCHAR")
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_end_field VARCHAR")
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_profile VARCHAR DEFAULT 'auto'")
+                    conn.execute(
+                        "ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_extraction_rule VARCHAR DEFAULT 'single'"
+                    )
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_format VARCHAR")
+                    conn.execute("ALTER TABLE jin_config ADD COLUMN IF NOT EXISTS time_pin INTEGER DEFAULT 0")
+                    row = conn.execute(
+                        """
+                        SELECT
+                            dimension_overrides,
+                            kpi_overrides,
+                            tolerance_pct,
+                            confirmed,
+                            tolerance_relaxed,
+                            tolerance_normal,
+                            tolerance_strict,
+                            active_tolerance,
+                            time_field,
+                            time_granularity,
+                            rows_path,
+                            time_end_field,
+                            time_profile,
+                            time_extraction_rule,
+                            time_format,
+                            time_pin
+                        FROM jin_config
+                        WHERE endpoint_path = ?
+                        """,
+                        [endpoint_path],
+                    ).fetchone()
+                if row:
+                    if merged.get("dimension_fields") is None and row[0]:
+                        try:
+                            merged["dimension_fields"] = json.loads(row[0])
+                        except Exception:
+                            pass
+                    if merged.get("kpi_fields") is None and row[1]:
+                        try:
+                            merged["kpi_fields"] = json.loads(row[1])
+                        except Exception:
+                            pass
+                    if merged.get("tolerance_pct") is None and row[2] is not None:
+                        merged["tolerance_pct"] = float(row[2])
+                    if merged.get("confirmed") is None and row[3] is not None:
+                        merged["confirmed"] = bool(row[3])
+                    if merged.get("tolerance_relaxed") is None and row[4] is not None:
+                        merged["tolerance_relaxed"] = float(row[4])
+                    if merged.get("tolerance_normal") is None and row[5] is not None:
+                        merged["tolerance_normal"] = float(row[5])
+                    if merged.get("tolerance_strict") is None and row[6] is not None:
+                        merged["tolerance_strict"] = float(row[6])
+                    if merged.get("active_tolerance") is None and row[7]:
+                        merged["active_tolerance"] = row[7]
+                    if merged.get("time_field") is None and row[8]:
+                        merged["time_field"] = row[8]
+                    if merged.get("time_granularity") is None and row[9]:
+                        merged["time_granularity"] = row[9]
+                    merged.update(
+                        {
+                            "rows_path": row[10],
+                            "time_end_field": row[11],
+                            "time_profile": row[12] or "auto",
+                            "time_extraction_rule": row[13] or "single",
+                            "time_format": row[14],
+                            "time_pin": bool(row[15]) if row[15] is not None else False,
+                        }
+                    )
+            except Exception:
+                pass
         return merged
 
     def _build_endpoint_config(self, record: EndpointRecord, extra: dict[str, Any] | None = None) -> str:

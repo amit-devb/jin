@@ -4662,9 +4662,10 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.post("/api/v2/config/{path:path}")
     async def save_config(path: str, request: Request) -> JSONResponse:
         require_auth(request, api=True)
-        require_duckdb()
-        middleware._ensure_python_schema()
-        middleware._reset_cached_connection()
+        if save_endpoint_config is None:
+            require_duckdb()
+            middleware._ensure_python_schema()
+            middleware._reset_cached_connection()
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         record = endpoint_record_or_404(endpoint_path)
         setup_snapshot = _setup_snapshot(endpoint_path)
