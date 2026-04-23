@@ -60,3 +60,23 @@ Read the short docs in this order to become a Jin power user:
 4. [Data Shape Guide](docs/data-contract.md)
 5. [Incident Workflow](docs/incidents.md)
 6. [CLI Operations](docs/operations-guide.md)
+
+## Local pre-push sandbox smoke
+
+For an end-to-end local sanity check (FastAPI + Jin mount + config + baseline upload + reconciliation),
+run:
+
+```bash
+./scripts/prepush_sandbox_smoke.sh
+```
+
+To enforce this automatically before every `git push` on your machine:
+
+```bash
+./scripts/install_pre_push_hook.sh
+```
+
+### Full OS matrix (GitHub Actions)
+
+To validate Linux + macOS + Windows in a real OS matrix without opening a PR, push the commit you want to test to branch `ci-test`.
+That triggers `.github/workflows/os-smoke.yml`.
