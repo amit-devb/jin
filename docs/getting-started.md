@@ -31,7 +31,7 @@ app = FastAPI()
 # Mounts the Rust-backed reconciliation engine and dashboard
 app.add_middleware(
     JinMiddleware, 
-    db_path="./jin.duckdb", 
+    db_path="./jin.duckdb",
     global_threshold=10.0
 )
 ```
@@ -43,6 +43,10 @@ Run your app and open the intuitive Jin UI:
 ```text
 http://127.0.0.1:8000/jin
 ```
+
+### Windows note
+
+Run with a single server worker (`--workers 1`). DuckDB file locking on Windows is stricter, and multi-worker setups can cause intermittent operator UI connectivity issues.
 
 From the dashboard, a Product Owner can independently:
 - **Discover**: Instantly view the auto-detected schemas and nested structures of your data endpoints.

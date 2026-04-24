@@ -118,7 +118,7 @@ def load_local_env(env_file: str = ".env") -> dict[str, str | None]:
 
 
 def env_db_path(cli_value: str | None = None) -> str:
-    return cli_value or os.getenv("JIN_DB_PATH", "./.jin/jin.duckdb")
+    return cli_value or os.getenv("JIN_DB_PATH", "./jin.duckdb")
 
 
 def ensure_db_parent_dir(db_path: str) -> None:
@@ -140,7 +140,7 @@ def env_project_name(cli_value: str | None = None) -> str:
 def ensure_project_root_cwd() -> None:
     """Fail fast when CLI is executed from a subdirectory.
 
-    Jin stores project-local state (like `.env` and `./.jin/jin.duckdb`) relative to the
+    Jin stores project-local state (like `.env` and `./jin.duckdb`) relative to the
     current working directory. Running from a nested folder commonly leads to confusing
     setup drift (multiple `.jin` dirs, missing DB warnings, etc.).
     """
@@ -680,7 +680,7 @@ def print_serve_check(app_path: str) -> None:
         return
     print("Serve check: Jin is not mounted yet.")
     print("  - Add JinMiddleware to your FastAPI app.")
-    print("  - Example: app.add_middleware(JinMiddleware, db_path='./.jin/jin.duckdb')")
+    print("  - Example: app.add_middleware(JinMiddleware, db_path='./jin.duckdb')")
     print("  - Then restart the app and open /jin.")
 
 
@@ -1127,7 +1127,7 @@ def command_patch_fastapi(args: argparse.Namespace) -> int:
     binding_kind, app_var = detect_fastapi_binding_in_source(content, requested_app_var)
 
     middleware_line = (
-        f'{app_var}.add_middleware(JinMiddleware, db_path="{getattr(args, "db_path", "./.jin/jin.duckdb")}", '
+        f'{app_var}.add_middleware(JinMiddleware, db_path="{getattr(args, "db_path", "./jin.duckdb")}", '
         f'global_threshold={float(getattr(args, "global_threshold", 10.0))})'
     )
     marker_begin = "# jin: begin middleware"

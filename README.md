@@ -39,7 +39,7 @@ from jin import JinMiddleware
 app = FastAPI()
 app.add_middleware(
     JinMiddleware, 
-    db_path="./jin.duckdb", 
+    db_path="./jin.duckdb",
     global_threshold=10.0
 )
 ```
@@ -49,6 +49,8 @@ app.add_middleware(
 ```text
 http://127.0.0.1:8000/jin
 ```
+
+**Windows note:** run with a single server worker (`--workers 1`). DuckDB file locking on Windows is stricter, and multi-worker setups can cause intermittent UI/backend connectivity issues.
 
 ## Documentation
 

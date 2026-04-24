@@ -240,7 +240,7 @@ DASHBOARD_BODY = r"""
                 </label>
                 <label>
                   DB path (optional)
-                  <input id="project-add-db-path" type="text" placeholder="/workspace/.jin/jin.duckdb" />
+                  <input id="project-add-db-path" type="text" placeholder="/workspace/jin.duckdb" />
                 </label>
               </div>
             </details>

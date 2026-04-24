@@ -3194,6 +3194,12 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     async def status(request: Request = None, project_id: str | None = None) -> JSONResponse:
         require_auth(request, api=True)
         safe_mode = request_prefers_safe_mode(request)
+        # The dashboard polls status aggressively and uses a short client-side timeout.
+        # In dashboard safe mode, prefer a fast in-memory snapshot to avoid holding the
+        # DuckDB lock or triggering native reads during page load.
+        if safe_mode:
+            return with_api_version_headers(JSONResponse(load_runtime_status()), request)
+
         token = set_native_reads(False) if safe_mode else None
         try:
             return with_api_version_headers(
@@ -4284,9 +4290,119 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
         reference_limit: int | None = None,
     ) -> JSONResponse:
         require_auth(request, api=True)
-        require_duckdb()
         endpoint_path = "/" + unquote(path).replace("--", "/").lstrip("/")
         record = endpoint_record_or_404(endpoint_path)
+
+        # Dashboard safe-mode: keep endpoint detail reads lightweight so the UI remains
+        # responsive on all OSes (especially Windows where DuckDB file locks are strict).
+        #
+        # This intentionally avoids DuckDB + native detail readers. Operators can still
+        # run uploads/checks, and deeper history/reference views can be fetched via
+        # explicit actions (or when safe-mode is off).
+        if request_prefers_safe_mode(request):
+            response_model_present = record.response_model is not None
+            time_candidates = _time_candidates_from_fields(record.fields)
+            config_payload = {
+                "dimension_fields": list(record.dimension_fields or []),
+                "kpi_fields": list(record.kpi_fields or []),
+                "tolerance_pct": middleware.global_threshold,
+                "tolerance_relaxed": 20.0,
+                "tolerance_normal": middleware.global_threshold,
+                "tolerance_strict": 5.0,
+                "active_tolerance": "normal",
+                "confirmed": False,
+                "time_field": None,
+                "time_granularity": "minute",
+                "rows_path": record.array_field_path,
+                "time_required": bool(time_candidates),
+                "time_candidates": time_candidates,
+            }
+            # Prefer in-memory overrides only; do not call `_load_overrides`.
+            overrides = middleware.override_state.get(endpoint_path, {})
+            for key in (
+                "dimension_fields",
+                "kpi_fields",
+                "tolerance_pct",
+                "tolerance_relaxed",
+                "tolerance_normal",
+                "tolerance_strict",
+                "active_tolerance",
+                "confirmed",
+                "rows_path",
+                "time_field",
+                "time_granularity",
+                "time_profile",
+                "time_extraction_rule",
+                "time_format",
+                "time_end_field",
+                "time_pin",
+            ):
+                if key in overrides and overrides[key] is not None:
+                    config_payload[key] = overrides[key]
+            runtime_state = middleware.runtime_state.get(endpoint_path, {})
+            last_upload_analysis, upload_analysis_history = upload_analysis_payload_for(endpoint_path)
+            return JSONResponse(
+                {
+                    "endpoint_path": endpoint_path,
+                    "http_method": record.method,
+                    "response_model_present": response_model_present,
+                    "discovery_status": record.discovery_status,
+                    "discovery_reason_codes": list(record.discovery_reason_codes or []),
+                    "dimension_fields": list(config_payload.get("dimension_fields") or []),
+                    "kpi_fields": list(config_payload.get("kpi_fields") or []),
+                    "fields": record.fields,
+                    "schema_contract": {
+                        "path": endpoint_path,
+                        "method": record.method,
+                        "fields": record.fields,
+                        "dimension_fields": list(config_payload.get("dimension_fields") or []),
+                        "kpi_fields": list(config_payload.get("kpi_fields") or []),
+                        "field_count": len(record.fields),
+                        "discovery_status": record.discovery_status,
+                        "discovery_reason_codes": list(record.discovery_reason_codes or []),
+                    },
+                    "config": config_payload,
+                    "history": runtime_state.get("history", []),
+                    "recent_history": runtime_state.get("recent_history", []),
+                    "anomalies": [item for item in runtime_enriched_anomalies() if item["endpoint_path"] == endpoint_path],
+                    "anomaly_history": [
+                        item for item in runtime_enriched_anomalies(True) if item["endpoint_path"] == endpoint_path
+                    ],
+                    "references": [],
+                    "trend_summary": build_trend_summary(
+                        runtime_state.get("history", []),
+                        list(config_payload.get("kpi_fields") or []),
+                    ),
+                    "current_kpis": [],
+                    "operator_metadata": load_endpoint_operational_metadata(endpoint_path),
+                    "upload_activity": load_endpoint_operational_metadata(endpoint_path)["recent_uploads"],
+                    "monitoring_runs": [],
+                    "last_upload_analysis": last_upload_analysis,
+                    "upload_analysis_history": upload_analysis_history,
+                    "setup": {
+                        "response_model_present": response_model_present,
+                        "discovery_status": record.discovery_status,
+                        "discovery_reason_codes": list(record.discovery_reason_codes or []),
+                        "dimension_fields": list(config_payload.get("dimension_fields") or []),
+                        "kpi_fields": list(config_payload.get("kpi_fields") or []),
+                        "time_field": str(config_payload.get("time_field") or "").strip() or None,
+                        "confirmed": bool(config_payload.get("confirmed", False)),
+                        "rows_path": config_payload.get("rows_path"),
+                        "time_profile": config_payload.get("time_profile") or "auto",
+                        "time_extraction_rule": config_payload.get("time_extraction_rule") or "single",
+                        "time_required": bool(time_candidates),
+                        "time_candidates": time_candidates,
+                        "recommendations": _setup_recommendations(record, endpoint_path),
+                        "recommended_config_payload": _recommended_config_payload(
+                            record,
+                            overrides,
+                            endpoint_path,
+                        ),
+                    },
+                }
+            )
+
+        require_duckdb()
         response_model_present = record.response_model is not None
         fallback_schema_contract = {
             "path": endpoint_path,
@@ -6762,6 +6878,41 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.get("/api/v2/anomalies")
     async def anomalies(request: Request = None) -> JSONResponse:
         require_auth(request, api=True)
+        try:
+            # Dashboard refresh expects this endpoint to respond quickly. When the dashboard
+            # is in safe mode (identified via `x-jin-client: dashboard`), avoid touching
+            # DuckDB/native readers and serve an in-memory view instead.
+            if request_prefers_safe_mode(request):
+                history_rows = [
+                    item
+                    for item in runtime_enriched_anomalies(True)
+                    if str(item.get("status") or "").lower() != "resolved"
+                ]
+                payload = {"anomalies": history_rows[:50], "history": history_rows[:50]}
+                payload["issues"] = payload["anomalies"]
+                payload["issue_history"] = payload["history"]
+                return JSONResponse(jsonable_encoder(payload))
+        except Exception as exc:  # pragma: no cover
+            record_router_error(
+                "router.anomalies",
+                "Could not load anomalies for the dashboard.",
+                detail=str(exc),
+                hint="Check server logs and DuckDB/native health. On Windows, prefer `--workers 1` and avoid `--reload` overlap during active dashboard use.",
+                level="warning",
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Could not load anomalies right now.",
+                    "hint": "Check server logs. If running multiple workers or reload, restart with `--workers 1`.",
+                    "anomalies": [],
+                    "history": [],
+                    "issues": [],
+                    "issue_history": [],
+                },
+                status_code=503,
+            )
+
         def _normalize_issue_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
             normalized: list[dict[str, object]] = []
             for raw in rows:
@@ -6899,14 +7050,34 @@ def create_router(middleware: "JinMiddleware") -> APIRouter:
     @router.get("/api/v2/scheduler")
     async def scheduler_status(request: Request = None) -> JSONResponse:
         require_auth(request, api=True)
-        jobs = middleware.scheduler_snapshot()
-        summary = {
-            "total_jobs": len(jobs),
-            "paused_jobs": sum(1 for item in jobs if item.get("paused")),
-            "skipped_jobs": sum(1 for item in jobs if item.get("last_status") == "skipped"),
-            "failing_jobs": sum(1 for item in jobs if item.get("last_status") == "error"),
-        }
-        return JSONResponse({"jobs": jobs, "running": middleware.scheduler.running, "summary": summary})
+        try:
+            jobs = middleware.scheduler_snapshot()
+            summary = {
+                "total_jobs": len(jobs),
+                "paused_jobs": sum(1 for item in jobs if item.get("paused")),
+                "skipped_jobs": sum(1 for item in jobs if item.get("last_status") == "skipped"),
+                "failing_jobs": sum(1 for item in jobs if item.get("last_status") == "error"),
+            }
+            return JSONResponse({"jobs": jobs, "running": middleware.scheduler.running, "summary": summary})
+        except Exception as exc:  # pragma: no cover
+            record_router_error(
+                "router.scheduler",
+                "Could not load scheduler state for the dashboard.",
+                detail=str(exc),
+                hint="If the scheduler is disabled (or the app is running with multiple workers), this may be expected.",
+                level="warning",
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Could not load scheduler state right now.",
+                    "hint": "Check server logs. On Windows, prefer `--workers 1`.",
+                    "jobs": [],
+                    "running": False,
+                    "summary": {"total_jobs": 0, "paused_jobs": 0, "skipped_jobs": 0, "failing_jobs": 0},
+                },
+                status_code=503,
+            )
 
     @router.post("/api/scheduler/{job_id:path}/pause")
     @router.post("/api/v2/scheduler/{job_id:path}/pause")

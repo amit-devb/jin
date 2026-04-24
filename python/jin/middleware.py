@@ -103,7 +103,7 @@ class JinMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app,
-        db_path: str = "./.jin/jin.duckdb",
+        db_path: str = "./jin.duckdb",
         global_threshold: float = 10.0,
         auth_callback: Any | None = None,
         exclude_paths: list[str] | None = None,
@@ -163,6 +163,25 @@ class JinMiddleware(BaseHTTPMiddleware):
             "yes",
             "on",
         }
+        # Windows guardrail: DuckDB file locking is stricter and uvicorn multi-worker
+        # setups can lead to overlapping access against the same db_path.
+        #
+        # Instead of failing silently, degrade gracefully by disabling the scheduler
+        # and recording a clear operator error.
+        try:
+            if os.name == "nt":
+                raw_workers = os.getenv("UVICORN_WORKERS") or os.getenv("WEB_CONCURRENCY") or "1"
+                workers = int(str(raw_workers).strip() or "1")
+                if workers > 1:
+                    self.scheduler_enabled = False
+                    self._record_error(
+                        "middleware.db",
+                        "Detected multiple server workers on Windows; disabling Jin scheduler to avoid DuckDB file lock issues.",
+                        hint="Run uvicorn with `--workers 1` (recommended on Windows), or use a separate DB per worker.",
+                        level="warning",
+                    )
+        except Exception:
+            pass
         self._middleware_created_perf = time.perf_counter()
         self._startup_completed_perf: float | None = None
         self.scheduler = JinScheduler(retry_backoff_seconds=300, retry_backoff_cap_seconds=3600)

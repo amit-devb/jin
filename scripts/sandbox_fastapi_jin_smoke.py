@@ -27,7 +27,7 @@ from jin.middleware import JinMiddleware
 app = FastAPI()
 app.add_middleware(
     JinMiddleware,
-    db_path="./.jin/jin.duckdb",
+    db_path="./jin.duckdb",
     log_level="WARNING",
 )
 
