@@ -415,6 +415,38 @@ def test_demo_disable_native_config_load_skips_native_override_loading(
     assert middleware.recent_errors == []
 
 
+def test_dashboard_safe_mode_endpoints_avoid_duckdb_native_reads(
+    client,
+    encoded_sales_path: str,
+) -> None:
+    headers = {"x-jin-client": "dashboard"}
+    status = client.get("/jin/api/v2/status", headers=headers)
+    assert status.status_code == 200
+    payload = status.json()
+    assert isinstance(payload, dict)
+
+    anomalies = client.get("/jin/api/v2/anomalies", headers=headers)
+    assert anomalies.status_code == 200
+    anomalies_payload = anomalies.json()
+    assert "anomalies" in anomalies_payload
+    assert "issues" in anomalies_payload
+
+    endpoint = client.get(f"/jin/api/v2/endpoint/{encoded_sales_path}", headers=headers)
+    assert endpoint.status_code == 200
+    endpoint_payload = endpoint.json()
+    assert endpoint_payload["endpoint_path"] == "/api/sales/{retailer}/{period}"
+    assert "config" in endpoint_payload
+    assert "setup" in endpoint_payload
+
+
+def test_windows_multi_worker_guard_disables_scheduler(app, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("UVICORN_WORKERS", "4")
+    monkeypatch.setenv("JIN_FORCE_WINDOWS_GUARDS", "1")
+    middleware = JinMiddleware(app, db_path=str(tmp_path / "phase5-windows-guard.duckdb"))
+    assert middleware.scheduler_enabled is False
+    assert any(item.get("source") == "middleware.db" for item in middleware.recent_errors)
+
+
 @pytest.mark.asyncio
 async def test_run_upload_analysis_native_array_and_fallback_processed_item_paths(
     app,

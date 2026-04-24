@@ -169,7 +169,8 @@ class JinMiddleware(BaseHTTPMiddleware):
         # Instead of failing silently, degrade gracefully by disabling the scheduler
         # and recording a clear operator error.
         try:
-            if os.name == "nt":
+            is_windows = os.name == "nt" or _env_truthy("JIN_FORCE_WINDOWS_GUARDS")
+            if is_windows:
                 raw_workers = os.getenv("UVICORN_WORKERS") or os.getenv("WEB_CONCURRENCY") or "1"
                 workers = int(str(raw_workers).strip() or "1")
                 if workers > 1:
